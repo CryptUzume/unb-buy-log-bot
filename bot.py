@@ -1,65 +1,83 @@
-import discord
-import gspread
-import json
 import os
-from discord.ext import commands
+import json
+import asyncio
+import discord
+from discord.ext import commands, tasks
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-# ==========================
-# 設定
-# ==========================
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")  # 環境変数にBotトークン
-SPREADSHEET_NAME = "Point shop"             # スプレッドシート名
-SHEET_NAME = "シート1"                        # シート名
+# ----------------------------
+# 環境変数読み込み
+# ----------------------------
+TOKEN = os.getenv("TOKEN")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS")  # JSON文字列として環境変数にセット
 
-# サービスアカウントのJSONを環境変数にセットしておく場合
-SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+print("DEBUG TOKEN:", repr(TOKEN))
+if not TOKEN:
+    raise ValueError("TOKEN が環境変数に設定されていません。")
 
-if SERVICE_ACCOUNT_JSON is None:
-    raise ValueError("SERVICE_ACCOUNT_JSON が設定されていません")
+if not GOOGLE_CREDENTIALS_JSON:
+    raise ValueError("GOOGLE_CREDENTIALS が環境変数に設定されていません。")
 
-creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+# JSONを辞書に変換
+try:
+    google_credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+except json.JSONDecodeError as e:
+    raise ValueError("GOOGLE_CREDENTIALS が正しいJSONではありません。") from e
 
-# ==========================
-# gspread認証
-# ==========================
-gc = gspread.service_account_from_dict(creds_dict)
+# ----------------------------
+# Google Sheets 接続
+# ----------------------------
+scope = ["https://spreadsheets.google.com/feeds",
+         "https://www.googleapis.com/auth/spreadsheets",
+         "https://www.googleapis.com/auth/drive.file",
+         "https://www.googleapis.com/auth/drive"]
+
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+    google_credentials_dict, scope
+)
+gc = gspread.authorize(credentials)
+
+# スプレッドシート名・シート名
+SPREADSHEET_NAME = "YourSpreadsheetName"  # ここを変更
+SHEET_NAME = "Sheet1"                     # ここを変更
 
 try:
     sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
-except gspread.SpreadsheetNotFound:
-    raise ValueError(f"{SPREADSHEET_NAME} というスプレッドシートが見つかりません。共有設定を確認してください。")
+    print(f"Connected to Google Sheet: {SPREADSHEET_NAME} -> {SHEET_NAME}")
+except gspread.exceptions.APIError as e:
+    print("Google Sheets API エラー:", e)
+    raise e
 
-# ==========================
-# Discord Bot設定
-# ==========================
+# ----------------------------
+# Discord Bot 初期化
+# ----------------------------
 intents = discord.Intents.default()
-intents.message_content = True
+intents.messages = True
+intents.guilds = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ==========================
-# Buyログ検知
-# ==========================
+# ----------------------------
+# Botイベント例
+# ----------------------------
 @bot.event
-async def on_message(message):
-    if message.author.bot:
-        return  # Botメッセージは無視
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print("------")
 
-    # ここでBuyログを検知する条件を指定
-    if "Buy" in message.content:
-        user = message.author.name
-        content = message.content
-        row = [user, content]
+# ----------------------------
+# 例: Google Sheets から値を取得して送信
+# ----------------------------
+@bot.command()
+async def get_cell(ctx, row: int, col: int):
+    try:
+        value = sheet.cell(row, col).value
+        await ctx.send(f"セル({row}, {col}) の値: {value}")
+    except Exception as e:
+        await ctx.send(f"エラー: {e}")
 
-        try:
-            sheet.append_row(row)
-            print(f"スプレッドシートに書き込み: {row}")
-        except Exception as e:
-            print(f"スプレッドシート書き込みエラー: {e}")
-
-    await bot.process_commands(message)
-
-# ==========================
-# 起動
-# ==========================
+# ----------------------------
+# Bot起動
+# ----------------------------
 bot.run(TOKEN)
-
