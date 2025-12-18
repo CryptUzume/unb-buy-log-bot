@@ -1,51 +1,52 @@
 import os
-import json
-from datetime import datetime, timezone, timedelta
-from discord.ext import commands
+import discord
+from discord.ext import tasks
 import gspread
+from datetime import datetime
+import json
 
-# --- 環境変数の取得 ---
-TOKEN = os.environ.get("TOKEN")
-SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+# --- 設定 ---
+TOKEN = os.getenv("DISCORD_TOKEN")  # Discord Bot Token
+CHANNEL_ID = 123456789012345678     # 監視するチャンネルIDに置き換えてください
+SPREADSHEET_NAME = "Point shop"
+SHEET_NAME = "シート1"
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")  # JSONをそのまま環境変数に登録
 
 if not TOKEN:
-    raise ValueError("Discord トークンが環境変数 TOKEN に設定されていません。")
-
+    raise ValueError("DISCORD_TOKEN が環境変数に設定されていません。")
 if not SERVICE_ACCOUNT_JSON:
-    raise ValueError("サービスアカウント JSON が環境変数 SERVICE_ACCOUNT_JSON に設定されていません。")
+    raise ValueError("SERVICE_ACCOUNT_JSON が環境変数に設定されていません。")
 
-# --- Google Sheets 認証 ---
-creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
-gc = gspread.service_account_from_dict(creds_dict)
-
-# --- スプレッドシート設定 ---
-SPREADSHEET_NAME = "UnbilievableBoatLogs"
-SHEET_NAME = "BuyLogs"
+# --- Google Sheets 接続 ---
+sa_info = json.loads(SERVICE_ACCOUNT_JSON)
+gc = gspread.service_account_from_dict(sa_info)
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# --- Discord Bot 設定 ---
-intents = commands.Intents.default()
+# --- Discord クライアント ---
+intents = discord.Intents.default()
+intents.messages = True
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = discord.Client(intents=intents)
 
-# --- Buy ログをシートに追加する関数 ---
-async def log_buy_to_sheet(user, item, amount):
-    # 日本時間に変換
-    jst = timezone(timedelta(hours=+9))
-    now = datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S")
-    sheet.append_row([now, user, item, amount])
-
-# --- Discord イベント ---
 @bot.event
 async def on_ready():
-    print(f"Bot logged in as {bot.user}")
+    print(f"{bot.user} でログ取得開始")
 
-@bot.command()
-async def buy(ctx, item: str, amount: float):
-    """Buy コマンドでスプレッドシートに記録"""
-    user = str(ctx.author)
-    await log_buy_to_sheet(user, item, amount)
-    await ctx.send(f"{user} の購入記録をスプレッドシートに追加しました。")
+@bot.event
+async def on_message(message):
+    if message.channel.id != CHANNEL_ID:
+        return
+    if "Unbilievable boat" in message.content and "Buy" in message.content:
+        # --- 時間を日本時間に変換 ---
+        now = datetime.utcnow()
+        jst = now.replace(hour=(now.hour + 9) % 24)  # UTC→JST
+        timestamp = jst.strftime("%Y-%m-%d %H:%M:%S")
 
-# --- Bot 起動 ---
+        # --- 例: ログ内容を取得（メッセージ全文） ---
+        content = message.content
+
+        # --- スプレッドシートに追記 ---
+        sheet.append_row([timestamp, content])
+        print(f"Logged: {timestamp} - {content}")
+
 bot.run(TOKEN)
