@@ -1,77 +1,77 @@
 import os
 import json
-from datetime import datetime, timezone, timedelta
-import discord
-from discord import Intents
+import re
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import discord
+from discord.ext import commands
+from datetime import datetime
+import pytz
 
-# ---------- 設定 ----------
-TOKEN = os.environ["TOKEN"]
-CHANNEL_ID = 1389281116418211861
-SPREADSHEET_NAME = "Point shop"
-SHEET_NAME = "シート1"
+# ==== 設定 ====
+TOKEN = os.getenv("TOKEN")
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Point shop")
+SHEET_NAME = os.getenv("SHEET_NAME", "シート1")
+TARGET_CHANNEL_ID = 1389281116418211861  # 対象チャンネルID
 
-# Google Sheets 認証
+# ==== Google Sheets 認証 ====
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials_dict = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
-gc = gspread.authorize(credentials)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(SERVICE_ACCOUNT_JSON), scope)
+gc = gspread.authorize(creds)
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# Discord クライアント
-intents = Intents.default()
-intents.message_content = True
+# ==== Discord Bot 設定 ====
+intents = discord.Intents.default()
 intents.messages = True
-client = discord.Client(intents=intents)
+intents.message_content = True  # 必須
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 記録済みログIDを保持
-logged_messages = set(sheet.col_values(1))  # 1列目にメッセージIDを保存しておく
+# ==== 登録済みログ管理 ====
+logged_messages = set()
 
-# JST時間取得
-def get_jst_now():
-    utc_now = datetime.utcnow().replace(tzinfo=timezone.utc)
-    jst_now = utc_now + timedelta(hours=9)
-    return jst_now.strftime("%Y-%m-%d %H:%M:%S")
-
-# ログ解析
-def parse_embed(embed):
-    if not embed or "Balance updated" not in embed.title:
-        return None
-    data = {}
-    for field in embed.fields:
-        if field.name == "User":
-            data["user"] = field.value
-        elif field.name == "Amount":
-            data["amount"] = field.value
-        elif field.name == "Reason":
-            data["reason"] = field.value
-    return data if "user" in data else None
-
-@client.event
+@bot.event
 async def on_ready():
-    print(f"Bot は起動しました: {client.user}")
+    print(f"Bot は起動しました: {bot.user}")
 
-@client.event
+@bot.event
 async def on_message(message):
-    if message.channel.id != CHANNEL_ID:
+    if message.channel.id != TARGET_CHANNEL_ID:
         return
     if not message.embeds:
         return
-    
+
     embed = message.embeds[0]
-    log_data = parse_embed(embed)
-    if not log_data:
+    desc = embed.description or ""
+
+    if "Balance updated" not in desc:
         return
 
     # 重複チェック
-    if str(message.id) in logged_messages:
+    if message.id in logged_messages:
         return
-    
-    # スプレッドシートに追加
-    row = [str(message.id), log_data["user"], log_data["amount"], log_data["reason"], get_jst_now()]
-    sheet.append_row(row)
-    logged_messages.add(str(message.id))
-    print(f"ログ記録: {row}")
+    logged_messages.add(message.id)
 
-client.run(TOKEN)
+    # 正規表現で必要な項目を抜き出す
+    user_match = re.search(r"User: <@!?(\d+)>", desc)
+    amount_match = re.search(r"Cash: ([\-\d]+) \| Bank: ([\-\d]+)", desc)
+    reason_match = re.search(r"Reason: (.+)", desc)
+    date_match = re.search(r"(\d{1,2})\s+\d{1,2}:\d{2}", desc)
+
+    if user_match and amount_match and reason_match and date_match:
+        user_id = user_match.group(1)
+        cash = amount_match.group(1)
+        bank = amount_match.group(2)
+        reason = reason_match.group(1)
+        day = date_match.group(1)
+
+        # 日本時間で時刻を取得
+        jst = pytz.timezone("Asia/Tokyo")
+        now = datetime.now(jst)
+        time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # スプレッドシートに書き込み
+        sheet.append_row([time_str, user_id, cash, bank, reason])
+        print(f"ログを登録しました: {user_id}, {cash}, {bank}, {reason}, {time_str}")
+
+bot.run(TOKEN)
