@@ -8,8 +8,8 @@ from discord.ext import commands
 # 設定
 # ==========================
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN")  # 環境変数にBotトークン
-SPREADSHEET_NAME = "BuyLog"                 # スプレッドシート名
-SHEET_NAME = "Sheet1"                        # シート名
+SPREADSHEET_NAME = "Point shop"             # スプレッドシート名
+SHEET_NAME = "シート1"                        # シート名
 
 # サービスアカウントのJSONを環境変数にセットしておく場合
 SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
@@ -62,3 +62,4 @@ async def on_message(message):
 # 起動
 # ==========================
 bot.run(TOKEN)
+
