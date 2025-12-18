@@ -1,75 +1,87 @@
 import os
+import json
 import discord
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 
-# ===== 環境変数から読み込み =====
+# -----------------------------
+# 環境変数
+# -----------------------------
 TOKEN = os.environ.get("TOKEN")
-if TOKEN is None:
-    raise ValueError("TOKEN が環境変数に設定されていません。")
-
 SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
-if SERVICE_ACCOUNT_JSON is None:
-    raise ValueError("SERVICE_ACCOUNT_JSON が環境変数に設定されていません。")
-
-# ===== スプレッドシート設定 =====
 SPREADSHEET_NAME = "Point shop"
 SHEET_NAME = "シート1"
+LOG_CHANNEL_ID = 1389281116418211861  # Buyログが流れるチャンネル
 
-# ===== Discord クライアント =====
-intents = discord.Intents.default()
-intents.messages = True
-client = discord.Client(intents=intents)
+if not TOKEN:
+    raise ValueError("TOKEN が環境変数に設定されていません。")
+if not SERVICE_ACCOUNT_JSON:
+    raise ValueError("SERVICE_ACCOUNT_JSON が環境変数に設定されていません。")
 
-# ===== Google Sheets 接続 =====
-scope = ['https://www.googleapis.com/auth/spreadsheets']
-credentials_dict = None
+# -----------------------------
+# Google スプレッドシート準備
+# -----------------------------
+# JSON を辞書に変換
+service_account_info = json.loads(SERVICE_ACCOUNT_JSON)
 
-import json
-try:
-    credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
-except Exception as e:
-    raise ValueError(f"SERVICE_ACCOUNT_JSON が正しいJSON形式ではありません: {e}")
+# スコープ追加
+scope = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
 
-credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
-gc = gspread.authorize(credentials)
+gc = gspread.service_account_from_dict(service_account_info, scopes=scope)
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# ===== ヘルパー: 日本時間取得 =====
-JST = timezone(timedelta(hours=+9))
-def now_jst():
-    return datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+# -----------------------------
+# Discord Bot 設定
+# -----------------------------
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True  # contentを取得する場合必要
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== メッセージ受信時処理 =====
-TARGET_CHANNEL_ID = 1389281116418211861
+# -----------------------------
+# ヘルパー関数
+# -----------------------------
+def append_buy_log_to_sheet(message):
+    """
+    Buyログをシートに追記
+    """
+    # 日本時間
+    JST = timezone(timedelta(hours=+9))
+    now_jst = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # メッセージ内容
+    content = message.content
 
-@client.event
+    # ここで必要な情報だけ取り出す場合、正規表現などで加工可
+    # 今は内容そのまま記録
+    sheet.append_row([now_jst, content])
+
+# -----------------------------
+# イベント
+# -----------------------------
+@bot.event
 async def on_ready():
-    print(f"{client.user} が起動しました。")
+    print(f"Bot は起動しました: {bot.user}")
 
-@client.event
+@bot.event
 async def on_message(message):
-    # 自分のメッセージは無視
-    if message.author == client.user:
+    # Bot 自身のメッセージは無視
+    if message.author.bot:
         return
 
-    # 対象チャンネルか確認
-    if message.channel.id != TARGET_CHANNEL_ID:
+    # 対象チャンネルのみ
+    if message.channel.id != LOG_CHANNEL_ID:
         return
 
-    # Buy ログのみ処理
+    # Buy ログだけ
     if "Buy" in message.content:
-        timestamp = now_jst()
-        user = str(message.author)
-        content = message.content
+        append_buy_log_to_sheet(message)
 
-        # スプレッドシートに追加
-        try:
-            sheet.append_row([timestamp, user, content])
-            print(f"[{timestamp}] Buyログを記録: {user} - {content}")
-        except Exception as e:
-            print(f"スプレッドシートへの書き込みに失敗: {e}")
-
-# ===== Bot 起動 =====
-client.run(TOKEN)
+# -----------------------------
+# Bot 起動
+# -----------------------------
+bot.run(TOKEN)
