@@ -74,3 +74,14 @@ async def on_message(message):
         print(f"記録しました: {data}")
 
 bot.run(TOKEN)
+@bot.event
+async def on_message(message):
+    if message.channel.id != 1389281116418211861:  # 対象チャンネルID
+        return
+    if not message.embeds:
+        print("埋め込みなし:", message.content)
+        return
+    for embed in message.embeds:
+        print("==== Embed内容 ====")
+        print(embed.to_dict())
+        print("===================")
