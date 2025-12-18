@@ -1,52 +1,75 @@
 import os
 import discord
-from discord.ext import tasks
 import gspread
-from datetime import datetime
-import json
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timezone, timedelta
 
-# --- 設定 ---
-TOKEN = os.getenv("DISCORD_TOKEN")  # Discord Bot Token
-CHANNEL_ID = 1389281116418211861    # 監視するチャンネルID
-SPREADSHEET_NAME = "Point shop"
-SHEET_NAME = "シート1"
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")  # JSONを環境変数に登録
+# ===== 環境変数から読み込み =====
+TOKEN = os.environ.get("TOKEN")
+if TOKEN is None:
+    raise ValueError("TOKEN が環境変数に設定されていません。")
 
-if not TOKEN:
-    raise ValueError("DISCORD_TOKEN が環境変数に設定されていません。")
-if not SERVICE_ACCOUNT_JSON:
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+if SERVICE_ACCOUNT_JSON is None:
     raise ValueError("SERVICE_ACCOUNT_JSON が環境変数に設定されていません。")
 
-# --- Google Sheets 接続 ---
-sa_info = json.loads(SERVICE_ACCOUNT_JSON)
-gc = gspread.service_account_from_dict(sa_info)
-sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+# ===== スプレッドシート設定 =====
+SPREADSHEET_NAME = "Point shop"
+SHEET_NAME = "シート1"
 
-# --- Discord クライアント ---
+# ===== Discord クライアント =====
 intents = discord.Intents.default()
 intents.messages = True
-intents.message_content = True
-bot = discord.Client(intents=intents)
+client = discord.Client(intents=intents)
 
-@bot.event
+# ===== Google Sheets 接続 =====
+scope = ['https://www.googleapis.com/auth/spreadsheets']
+credentials_dict = None
+
+import json
+try:
+    credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
+except Exception as e:
+    raise ValueError(f"SERVICE_ACCOUNT_JSON が正しいJSON形式ではありません: {e}")
+
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+gc = gspread.authorize(credentials)
+sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+
+# ===== ヘルパー: 日本時間取得 =====
+JST = timezone(timedelta(hours=+9))
+def now_jst():
+    return datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+
+# ===== メッセージ受信時処理 =====
+TARGET_CHANNEL_ID = 1389281116418211861
+
+@client.event
 async def on_ready():
-    print(f"{bot.user} でログ取得開始")
+    print(f"{client.user} が起動しました。")
 
-@bot.event
+@client.event
 async def on_message(message):
-    if message.channel.id != CHANNEL_ID:
+    # 自分のメッセージは無視
+    if message.author == client.user:
         return
-    if "Unbilievable boat" in message.content and "Buy" in message.content:
-        # --- 時間を日本時間に変換 ---
-        now = datetime.utcnow()
-        jst = now.replace(hour=(now.hour + 9) % 24)  # UTC→JST
-        timestamp = jst.strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- ログ内容を取得（メッセージ全文） ---
+    # 対象チャンネルか確認
+    if message.channel.id != TARGET_CHANNEL_ID:
+        return
+
+    # Buy ログのみ処理
+    if "Buy" in message.content:
+        timestamp = now_jst()
+        user = str(message.author)
         content = message.content
 
-        # --- スプレッドシートに追記 ---
-        sheet.append_row([timestamp, content])
-        print(f"Logged: {timestamp} - {content}")
+        # スプレッドシートに追加
+        try:
+            sheet.append_row([timestamp, user, content])
+            print(f"[{timestamp}] Buyログを記録: {user} - {content}")
+        except Exception as e:
+            print(f"スプレッドシートへの書き込みに失敗: {e}")
 
-bot.run(TOKEN)
+# ===== Bot 起動 =====
+client.run(TOKEN)
