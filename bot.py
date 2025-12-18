@@ -1,77 +1,71 @@
 import os
 import json
-import re
+import discord
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import discord
-from discord.ext import commands
 from datetime import datetime
 import pytz
 
-# ==== 設定 ====
-TOKEN = os.getenv("TOKEN")
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "Point shop")
-SHEET_NAME = os.getenv("SHEET_NAME", "シート1")
-TARGET_CHANNEL_ID = 1389281116418211861  # 対象チャンネルID
+# 環境変数読み込み
+TOKEN = os.environ["TOKEN"]
+SERVICE_ACCOUNT_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
+SPREADSHEET_NAME = os.environ["SPREADSHEET_NAME"]
+SHEET_NAME = os.environ["SHEET_NAME"]
 
-# ==== Google Sheets 認証 ====
+# Google スプレッドシート接続
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(SERVICE_ACCOUNT_JSON), scope)
-gc = gspread.authorize(creds)
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(SERVICE_ACCOUNT_JSON), scope)
+gc = gspread.authorize(credentials)
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# ==== Discord Bot 設定 ====
 intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True  # 必須
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.message_content = True
+client = discord.Client(intents=intents)
 
-# ==== 登録済みログ管理 ====
-logged_messages = set()
+CHANNEL_ID = 1389281116418211861  # Buyログが流れるチャンネル
 
-@bot.event
+# 既存ログの重複チェック用
+processed_ids = set()
+
+@client.event
 async def on_ready():
-    print(f"Bot は起動しました: {bot.user}")
+    print(f'Bot は起動しました: {client.user}')
 
-@bot.event
+@client.event
 async def on_message(message):
-    if message.channel.id != TARGET_CHANNEL_ID:
+    # 対象チャンネル以外は無視
+    if message.channel.id != CHANNEL_ID:
         return
+
+    # 埋め込みがあるか確認
     if not message.embeds:
         return
 
-    embed = message.embeds[0]
-    desc = embed.description or ""
+    for embed in message.embeds:
+        # Buy ログだけ処理
+        if "buy item" in embed.description.lower():
+            if message.id in processed_ids:
+                return  # 既に処理済み
+            processed_ids.add(message.id)
 
-    if "Balance updated" not in desc:
-        return
+            # description から各項目を抽出
+            desc = embed.description
+            try:
+                user_line = next(line for line in desc.splitlines() if line.startswith("User:"))
+                amount_line = next(line for line in desc.splitlines() if line.startswith("Amount:"))
+                reason_line = next(line for line in desc.splitlines() if line.startswith("Reason:"))
+                date_line = next((line for line in desc.splitlines() if line.strip()), "")  # 日付は最後の行
+            except StopIteration:
+                continue
 
-    # 重複チェック
-    if message.id in logged_messages:
-        return
-    logged_messages.add(message.id)
+            user = user_line.replace("User:", "").strip()
+            amount = amount_line.replace("Amount:", "").strip()
+            reason = reason_line.replace("Reason:", "").strip()
+            # 日本時間での記録
+            jst = pytz.timezone("Asia/Tokyo")
+            now = datetime.now(jst).strftime("%Y-%m-%d %H:%M:%S")
+            
+            # スプレッドシートに追加
+            sheet.append_row([now, user, amount, reason, date_line])
 
-    # 正規表現で必要な項目を抜き出す
-    user_match = re.search(r"User: <@!?(\d+)>", desc)
-    amount_match = re.search(r"Cash: ([\-\d]+) \| Bank: ([\-\d]+)", desc)
-    reason_match = re.search(r"Reason: (.+)", desc)
-    date_match = re.search(r"(\d{1,2})\s+\d{1,2}:\d{2}", desc)
-
-    if user_match and amount_match and reason_match and date_match:
-        user_id = user_match.group(1)
-        cash = amount_match.group(1)
-        bank = amount_match.group(2)
-        reason = reason_match.group(1)
-        day = date_match.group(1)
-
-        # 日本時間で時刻を取得
-        jst = pytz.timezone("Asia/Tokyo")
-        now = datetime.now(jst)
-        time_str = now.strftime("%Y-%m-%d %H:%M:%S")
-
-        # スプレッドシートに書き込み
-        sheet.append_row([time_str, user_id, cash, bank, reason])
-        print(f"ログを登録しました: {user_id}, {cash}, {bank}, {reason}, {time_str}")
-
-bot.run(TOKEN)
+client.run(TOKEN)
