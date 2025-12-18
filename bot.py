@@ -1,84 +1,95 @@
+import os
+import json
 import discord
 from discord.ext import commands
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-import os
 from datetime import datetime
 import pytz
 
-TOKEN = os.environ["TOKEN"]
+# ----------------- 環境変数 -----------------
+TOKEN = os.environ['TOKEN']  # Discord Bot Token
+SERVICE_ACCOUNT_JSON = os.environ['SERVICE_ACCOUNT_JSON']  # JSON文字列
 SPREADSHEET_NAME = "Point shop"
 SHEET_NAME = "シート1"
-SERVICE_ACCOUNT_JSON = os.environ["SERVICE_ACCOUNT_JSON"]
+CHANNEL_ID = 1389281116418211861  # BuyログのチャンネルID
 
-scope = ["https://spreadsheets.google.com/feeds",
-         "https://www.googleapis.com/auth/spreadsheets",
-         "https://www.googleapis.com/auth/drive.file",
-         "https://www.googleapis.com/auth/drive"]
-
+# ----------------- Google Sheets 接続 -----------------
 gc = gspread.service_account_from_dict(json.loads(SERVICE_ACCOUNT_JSON))
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
+# ここで重複防止用の最新行IDを保持
+logged_messages = set()
+
+# ----------------- Discord Bot セットアップ -----------------
 intents = discord.Intents.default()
 intents.messages = True
-intents.message_content = True
-
+intents.message_content = True  # メッセージ内容取得
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Buyログの埋め込み解析
+# ----------------- ヘルパー関数 -----------------
 def parse_buy_embed(embed: discord.Embed):
-    print("DEBUG EMBED TITLE:", embed.title)
-    print("DEBUG EMBED DESCRIPTION:", embed.description)
-    data = {}
-    if embed.description and "buy item" in embed.description:
-        lines = embed.description.split("\n")
-        for line in lines:
-            if line.startswith("**User:**"):
-                data["user"] = line.replace("**User:**", "").strip()
-            elif line.startswith("**Amount:**"):
-                # Cash と Bank を分ける
-                parts = line.replace("**Amount:**", "").strip().split("|")
-                for part in parts:
-                    key, value = part.split(":")
-                    data[key.strip().lower()] = value.strip()
-            elif line.startswith("**Reason:**"):
-                data["reason"] = line.replace("**Reason:**", "").strip()
-            elif line:
-                # 最後の行は timestamp として扱う
-                data["timestamp"] = line.strip()
-        return data
-    return None
+    """埋め込みからBuyログ情報を抽出"""
+    if not embed or not embed.description:
+        return None
 
+    desc = embed.description
+    lines = desc.split('\n')
+    data = {"User": "", "Cash": "", "Bank": "", "Reason": ""}
+
+    for line in lines:
+        if line.startswith("**User:**"):
+            data["User"] = line.replace("**User:**", "").strip()
+        elif line.startswith("**Amount:**"):
+            # CashとBankを分割
+            parts = line.replace("**Amount:**", "").split("|")
+            if len(parts) == 2:
+                data["Cash"] = parts[0].replace("Cash:", "").strip(' `')
+                data["Bank"] = parts[1].replace("Bank:", "").strip(' `')
+        elif line.startswith("**Reason:**"):
+            data["Reason"] = line.replace("**Reason:**", "").strip()
+
+    return data
+
+# ----------------- Discord イベント -----------------
 @bot.event
 async def on_ready():
     print(f"Bot は起動しました: {bot.user}")
 
 @bot.event
 async def on_message(message):
-    if message.channel.id != 1389281116418211861:  # 対象チャンネル
+    # Bot自身のメッセージは無視
+    if message.author.bot:
         return
 
-    if message.embeds:
-        for embed in message.embeds:
-            buy_data = parse_buy_embed(embed)
-            if buy_data:
-                # 日本時間で timestamp を補正
-                try:
-                    dt = datetime.strptime(buy_data["timestamp"], "%Y/%m/%d %H:%M")
-                    jst = pytz.timezone("Asia/Tokyo")
-                    dt = jst.localize(dt)
-                    timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    timestamp_str = datetime.now(pytz.timezone("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+    # 対象チャンネルのみ
+    if message.channel.id != CHANNEL_ID:
+        return
 
-                row = [
-                    timestamp_str,
-                    bot.user.name,
-                    "Buy",
-                    buy_data.get("user", ""),
-                    buy_data.get("cash", ""),
-                    buy_data.get("bank", ""),
-                    buy_data.get("reason", "")
-                ]
-                print("DEBUG ROW TO SHEET:", row)
-                sheet.append_row(row)
+    # 埋め込みがない場合は無視
+    if not message.embeds:
+        return
+
+    for embed in message.embeds:
+        data = parse_buy_embed(embed)
+        if data:
+            # DEBUG
+            print(f"DEBUG EMBED TITLE: {embed.title}")
+            print(f"DEBUG EMBED DESCRIPTION: {embed.description}")
+
+            # 重複チェック
+            if message.id in logged_messages:
+                print("DEBUG: 重複メッセージ、スキップ")
+                continue
+            logged_messages.add(message.id)
+
+            # 日本時間取得
+            tz = pytz.timezone("Asia/Tokyo")
+            timestamp = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+            # スプレッドシート書き込み
+            row = [timestamp, str(bot.user), "buy", data["User"], data["Cash"], data["Bank"], data["Reason"]]
+            sheet.append_row(row)
+            print(f"スプレッドシートに書き込み完了: {row}")
+
+# ----------------- Bot 起動 -----------------
+bot.run(TOKEN)
