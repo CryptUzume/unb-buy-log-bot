@@ -1,8 +1,8 @@
 import os
 import json
-import asyncio
-import gspread
+from datetime import datetime, timezone, timedelta
 from discord.ext import commands
+import gspread
 
 # --- 環境変数の取得 ---
 TOKEN = os.environ.get("TOKEN")
@@ -18,20 +18,22 @@ if not SERVICE_ACCOUNT_JSON:
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
 gc = gspread.service_account_from_dict(creds_dict)
 
-# スプレッドシート名とシート名
+# --- スプレッドシート設定 ---
 SPREADSHEET_NAME = "UnbilievableBoatLogs"
 SHEET_NAME = "BuyLogs"
-
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
 # --- Discord Bot 設定 ---
 intents = commands.Intents.default()
-intents.message_content = True  # メッセージ読み取り用
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- ログをシートに追加する関数 ---
+# --- Buy ログをシートに追加する関数 ---
 async def log_buy_to_sheet(user, item, amount):
-    sheet.append_row([user, item, amount, str(asyncio.get_event_loop().time())])
+    # 日本時間に変換
+    jst = timezone(timedelta(hours=+9))
+    now = datetime.now(jst).strftime("%Y/%m/%d %H:%M:%S")
+    sheet.append_row([now, user, item, amount])
 
 # --- Discord イベント ---
 @bot.event
