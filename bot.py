@@ -1,92 +1,38 @@
-import os
-import json
-import base64
-import asyncio
 import discord
 import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime
+from oauth2client.service_account import ServiceAccountCredentials
+import os
 
-# =========================
-# 環境変数
-# =========================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-SERVICE_ACCOUNT_JSON_BASE64 = os.getenv("SERVICE_ACCOUNT_JSON_BASE64")
+# --- 環境変数から読み込む ---
+TOKEN = os.environ.get("DISCORD_TOKEN")  # Discord Bot トークン
+BUY_LOG_CHANNEL = int(os.environ.get("BUY_LOG_CHANNEL", 0))  # Buyログ用チャンネルID
+SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME")  # スプシ名
+SHEET_NAME = os.environ.get("SHEET_NAME", "Sheet1")  # タブ名
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")  # JSON文字列
 
-if not DISCORD_TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is not set")
+# --- Googleスプレッドシート認証 ---
+import json
+creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+scope = ["https://spreadsheets.google.com/feeds",
+         "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+gc = gspread.authorize(creds)
+sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-if not SPREADSHEET_ID:
-    raise RuntimeError("SPREADSHEET_ID is not set")
-
-if not SERVICE_ACCOUNT_JSON_BASE64:
-    raise RuntimeError("SERVICE_ACCOUNT_JSON_BASE64 is not set")
-
-# =========================
-# Google Sheets 認証
-# =========================
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-def get_worksheet():
-    info = json.loads(
-        base64.b64decode(SERVICE_ACCOUNT_JSON_BASE64).decode("utf-8")
-    )
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(SPREADSHEET_ID)
-    return sh.sheet1  # 1枚目を使用
-
-worksheet = get_worksheet()
-
-# =========================
-# Discord Bot 設定
-# =========================
+# --- Discord クライアント ---
 intents = discord.Intents.default()
 intents.message_content = True
-
 client = discord.Client(intents=intents)
 
-# =========================
-# Bot 起動
-# =========================
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user}")
-    # 起動確認用ログ
-    worksheet.append_row([
-        datetime.utcnow().isoformat(),
-        "SYSTEM",
-        "Bot started"
-    ])
 
-# =========================
-# メッセージ監視（Buyログ想定）
-# =========================
 @client.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
+async def on_message(message):
+    if message.channel.id == BUY_LOG_CHANNEL and not message.author.bot:
+        # Buyログをスプレッドシートに追記
+        sheet.append_row([message.author.name, message.content])
+        print(f"Logged to spreadsheet: {message.author.name}, {message.content}")
 
-    content = message.content
-
-    # 🔽 ここを Buy ログ条件に合わせて調整
-    if "BUY" in content.upper():
-        try:
-            worksheet.append_row([
-                datetime.utcnow().isoformat(),
-                message.author.name,
-                content
-            ])
-            print("Buy log written to sheet")
-
-        except Exception as e:
-            print("Failed to write to sheet:", e)
-
-# =========================
-# 実行
-# =========================
-client.run(DISCORD_TOKEN)
+client.run(TOKEN)
