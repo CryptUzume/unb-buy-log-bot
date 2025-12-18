@@ -7,10 +7,10 @@ import json
 
 # --- 設定 ---
 TOKEN = os.getenv("DISCORD_TOKEN")  # Discord Bot Token
-CHANNEL_ID = 123456789012345678     # 監視するチャンネルIDに置き換えてください
+CHANNEL_ID = 1389281116418211861    # 監視するチャンネルID
 SPREADSHEET_NAME = "Point shop"
 SHEET_NAME = "シート1"
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")  # JSONをそのまま環境変数に登録
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")  # JSONを環境変数に登録
 
 if not TOKEN:
     raise ValueError("DISCORD_TOKEN が環境変数に設定されていません。")
@@ -42,7 +42,7 @@ async def on_message(message):
         jst = now.replace(hour=(now.hour + 9) % 24)  # UTC→JST
         timestamp = jst.strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- 例: ログ内容を取得（メッセージ全文） ---
+        # --- ログ内容を取得（メッセージ全文） ---
         content = message.content
 
         # --- スプレッドシートに追記 ---
