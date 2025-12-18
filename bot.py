@@ -1,84 +1,77 @@
 import os
 import json
+from datetime import datetime, timezone, timedelta
 import discord
-from discord.ext import commands
+from discord import Intents
 import gspread
-from datetime import datetime
-import pytz
+from oauth2client.service_account import ServiceAccountCredentials
 
-# 環境変数から設定
-TOKEN = os.environ.get("TOKEN")
-SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+# ---------- 設定 ----------
+TOKEN = os.environ["TOKEN"]
+CHANNEL_ID = 1389281116418211861
 SPREADSHEET_NAME = "Point shop"
 SHEET_NAME = "シート1"
-CHANNEL_ID = 1389281116418211861
 
-if not TOKEN:
-    raise ValueError("TOKEN が環境変数に設定されていません。")
-if not SERVICE_ACCOUNT_JSON:
-    raise ValueError("SERVICE_ACCOUNT_JSON が環境変数に設定されていません。")
-
-# Google Sheets 接続
-scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-gc = gspread.service_account_from_dict(json.loads(SERVICE_ACCOUNT_JSON), scopes=scope)
+# Google Sheets 認証
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+credentials_dict = json.loads(os.environ["SERVICE_ACCOUNT_JSON"])
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_dict, scope)
+gc = gspread.authorize(credentials)
 sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# Bot設定
-intents = discord.Intents.default()
+# Discord クライアント
+intents = Intents.default()
 intents.message_content = True
 intents.messages = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
-# 重複チェック用
-logged_messages = set()
+# 記録済みログIDを保持
+logged_messages = set(sheet.col_values(1))  # 1列目にメッセージIDを保存しておく
 
-@bot.event
+# JST時間取得
+def get_jst_now():
+    utc_now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    jst_now = utc_now + timedelta(hours=9)
+    return jst_now.strftime("%Y-%m-%d %H:%M:%S")
+
+# ログ解析
+def parse_embed(embed):
+    if not embed or "Balance updated" not in embed.title:
+        return None
+    data = {}
+    for field in embed.fields:
+        if field.name == "User":
+            data["user"] = field.value
+        elif field.name == "Amount":
+            data["amount"] = field.value
+        elif field.name == "Reason":
+            data["reason"] = field.value
+    return data if "user" in data else None
+
+@client.event
 async def on_ready():
-    print(f"Bot は起動しました: {bot.user}")
+    print(f"Bot は起動しました: {client.user}")
 
-@bot.event
+@client.event
 async def on_message(message):
-    # 対象チャンネルのみ処理
     if message.channel.id != CHANNEL_ID:
         return
-    # 埋め込みメッセージのみ
     if not message.embeds:
         return
-
+    
     embed = message.embeds[0]
-    title = embed.title or ""
-    description = embed.description or ""
-
-    # Buyログだけ処理
-    if "buy item" not in description.lower():
+    log_data = parse_embed(embed)
+    if not log_data:
         return
 
-    # 重複防止
-    msg_id = f"{message.id}"
-    if msg_id in logged_messages:
+    # 重複チェック
+    if str(message.id) in logged_messages:
         return
-    logged_messages.add(msg_id)
-
-    # 内容を抽出
-    user_line = next((line for line in description.splitlines() if line.startswith("User:")), "")
-    amount_line = next((line for line in description.splitlines() if line.startswith("Amount:")), "")
-    reason_line = next((line for line in description.splitlines() if line.startswith("Reason:")), "")
-    time_line = next((line for line in description.splitlines() if line.startswith("今日")), "")
-
-    # 日本時間に変換
-    tz = pytz.timezone("Asia/Tokyo")
-    now_jp = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-
-    row = [
-        now_jp,
-        user_line.replace("User: ", "").strip(),
-        amount_line.replace("Amount: ", "").strip(),
-        reason_line.replace("Reason: ", "").strip(),
-        time_line.replace("今日 ", "").strip()
-    ]
-
+    
     # スプレッドシートに追加
+    row = [str(message.id), log_data["user"], log_data["amount"], log_data["reason"], get_jst_now()]
     sheet.append_row(row)
-    print(f"Logged: {row}")
+    logged_messages.add(str(message.id))
+    print(f"ログ記録: {row}")
 
-bot.run(TOKEN)
+client.run(TOKEN)
