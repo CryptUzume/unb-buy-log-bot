@@ -40,7 +40,7 @@ print("✅ Google Sheets 接続成功")
 # Discord Client
 # =====================
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = False
 client = discord.Client(intents=intents)
 
 processed_message_ids = set()
@@ -60,8 +60,8 @@ def parse_unbelievaboat_buy(embed: discord.Embed):
 
         if "user" in name:
             user = value.strip()
+
         elif "amount" in name:
-            # Cash: `-5` | Bank: `0`
             cash_match = re.search(r"Cash:\s*`?(-?\d+)`?", value)
             bank_match = re.search(r"Bank:\s*`?(-?\d+)`?", value)
 
@@ -87,19 +87,19 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    # UnbelievaBoat の Embed BUY ログ専用
+    if not message.author.bot:
+        return
+
     if not message.embeds:
         return
 
     embed = message.embeds[0]
 
-    if embed.title is None or "buy" not in embed.title.lower():
-        return
-
     user, cash, bank, reason = parse_unbelievaboat_buy(embed)
 
-    if not user:
-        return  # BUY ではない or 想定外構造
+    # BUY ログでなければ弾く
+    if not user or cash == "" or bank == "":
+        return
 
     processed_message_ids.add(message.id)
 
