@@ -43,29 +43,37 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# =====================
-# BUY 判定
-# =====================
-BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
-
 processed_message_ids = set()
 
-def extract_message_text(message: discord.Message) -> str:
-    """通常メッセージ + Embed を全部文字列化"""
-    texts = []
+# =====================
+# Embed パース
+# =====================
+def parse_unbelievaboat_buy(embed: discord.Embed):
+    user = ""
+    cash = ""
+    bank = ""
+    reason = ""
 
-    if message.content:
-        texts.append(message.content)
+    for field in embed.fields:
+        name = field.name.lower()
+        value = field.value
 
-    for embed in message.embeds:
-        if embed.title:
-            texts.append(embed.title)
-        if embed.description:
-            texts.append(embed.description)
-        for field in embed.fields:
-            texts.append(f"{field.name}: {field.value}")
+        if "user" in name:
+            user = value.strip()
+        elif "amount" in name:
+            # Cash: `-5` | Bank: `0`
+            cash_match = re.search(r"Cash:\s*`?(-?\d+)`?", value)
+            bank_match = re.search(r"Bank:\s*`?(-?\d+)`?", value)
 
-    return "\n".join(texts)
+            if cash_match:
+                cash = cash_match.group(1)
+            if bank_match:
+                bank = bank_match.group(1)
+
+        elif "reason" in name:
+            reason = value.strip()
+
+    return user, cash, bank, reason
 
 @client.event
 async def on_ready():
@@ -79,31 +87,31 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    full_text = extract_message_text(message)
-
-    print(f"📩 Message received:\n{full_text}")
-
-    if not BUY_PATTERN.search(full_text):
-        print("⏭ BUY 判定に該当せず")
+    # UnbelievaBoat の Embed BUY ログ専用
+    if not message.embeds:
         return
 
-    processed_message_ids.add(message.id)
+    embed = message.embeds[0]
 
-    print("📝 Sheets に書き込み開始")
+    if embed.title is None or "buy" not in embed.title.lower():
+        return
+
+    user, cash, bank, reason = parse_unbelievaboat_buy(embed)
+
+    if not user:
+        return  # BUY ではない or 想定外構造
+
+    processed_message_ids.add(message.id)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     bot_name = message.author.name
     action = "BUY"
-    user_name = str(message.author)
-    cash = ""
-    bank = ""
-    reason = full_text
 
     worksheet.append_row(
-        [timestamp, bot_name, action, user_name, cash, bank, reason],
+        [timestamp, bot_name, action, user, cash, bank, reason],
         value_input_option="USER_ENTERED"
     )
 
-    print("✅ Sheets 書き込み完了")
+    print("✅ BUY ログを Sheets に記録")
 
 client.run(TOKEN)
