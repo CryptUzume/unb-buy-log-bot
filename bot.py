@@ -1,110 +1,120 @@
 import os
 import json
-import re
-from datetime import datetime, timezone, timedelta
+import asyncio
+from datetime import datetime, timezone
 
 import discord
 import gspread
 
-# =========================
+# =====================
 # 環境変数
-# =========================
-TOKEN = os.getenv("TOKEN")
+# =====================
+TOKEN = os.getenv("DISCORD_TOKEN")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME")
+SPREADSHEET_KEY = os.getenv("SPREADSHEET_KEY")
 SHEET_NAME = os.getenv("SHEET_NAME")
 
-if not all([TOKEN, SERVICE_ACCOUNT_JSON, SPREADSHEET_NAME, SHEET_NAME]):
-    raise ValueError("必要な環境変数が設定されていません")
+# =====================
+# Google Sheets 接続
+# =====================
+service_account_info = json.loads(SERVICE_ACCOUNT_JSON.replace("\\n", "\n"))
+gc = gspread.service_account_from_dict(service_account_info)
+sh = gc.open_by_key(SPREADSHEET_KEY)
+worksheet = sh.worksheet(SHEET_NAME)
 
-# =========================
-# 定数
-# =========================
-TARGET_CHANNEL_ID = 1389281116418211861
-JST = timezone(timedelta(hours=9))
-
-# =========================
-# Google Sheets
-# =========================
-gc = gspread.service_account_from_dict(json.loads(SERVICE_ACCOUNT_JSON))
-sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
-
-# =========================
-# Discord
-# =========================
+# =====================
+# Discord 設定
+# =====================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # ← ユーザー名取得に必須
 
 client = discord.Client(intents=intents)
 
-# =========================
-# ヘルパー
-# =========================
-def parse_description(desc: str):
-    """
-    embed.description から必要な情報を抽出
-    """
-    user_match = re.search(r"\*\*User:\*\*\s*(.+)", desc)
-    amount_match = re.search(r"Cash:\s*`?(-?\d+)`?\s*\|\s*Bank:\s*`?(-?\d+)`?", desc)
-    reason_match = re.search(r"\*\*Reason:\*\*\s*(.+)", desc)
-
-    user = user_match.group(1).strip() if user_match else ""
-    cash = amount_match.group(1) if amount_match else ""
-    bank = amount_match.group(2) if amount_match else ""
-    reason = reason_match.group(1).strip() if reason_match else ""
-
-    return user, cash, bank, reason
-
-# =========================
-# イベント
-# =========================
+# =====================
+# Ready
+# =====================
 @client.event
 async def on_ready():
     print(f"Bot は起動しました: {client.user}")
 
+# =====================
+# メッセージ監視（buyログのみ）
+# =====================
 @client.event
 async def on_message(message: discord.Message):
-    # 対象チャンネルのみ
-    if message.channel.id != TARGET_CHANNEL_ID:
+    if message.author.bot:
         return
 
-    # Embed がなければ無視
     if not message.embeds:
         return
 
     for embed in message.embeds:
-        desc = embed.description or ""
+        # buyログ判定（Reason に buy item が含まれるものだけ）
+        if not embed.description:
+            continue
 
-        # 🔴 buy ログ以外は全て無視
-        if "buy item" not in desc:
+        if "buy item" not in embed.description.lower():
+            continue
+
+        # =====================
+        # embed 解析
+        # =====================
+        user_id = None
+        cash = ""
+        bank = ""
+        reason = ""
+
+        lines = embed.description.split("\n")
+        for line in lines:
+            if line.startswith("**User:**"):
+                user_id = line.split("<@")[1].split(">")[0]
+
+            elif line.startswith("**Amount:**"):
+                # Cash: `-5` | Bank: `0`
+                parts = line.replace("**Amount:**", "").split("|")
+                cash = parts[0].split("`")[1]
+                bank = parts[1].split("`")[1]
+
+            elif line.startswith("**Reason:**"):
+                reason = line.replace("**Reason:**", "").strip()
+
+        if not user_id:
             return
 
-        # データ抽出
-        user, cash, bank, reason = parse_description(desc)
+        # =====================
+        # ユーザー名変換
+        # =====================
+        member = message.guild.get_member(int(user_id))
+        if member:
+            username = member.display_name
+        else:
+            username = f"Unknown ({user_id})"
 
-        # タイムスタンプ（JST）
-        timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+        # =====================
+        # 書き込みデータ
+        # =====================
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        bot_name = str(client.user)
+        action = "BUY"
 
         row = [
             timestamp,
-            client.user.name,
-            "buy",
-            user,
+            bot_name,
+            action,
+            username,
             cash,
             bank,
             reason
         ]
 
-        sheet.append_row(row)
-        print("スプレッドシートに書き込み:", row)
+        # =====================
+        # スプレッドシート書き込み
+        # =====================
+        worksheet.append_row(row, value_input_option="USER_ENTERED")
+        print("BUY ログを書き込み:", row)
 
-# =========================
+# =====================
 # 起動
-# =========================
+# =====================
 client.run(TOKEN)
-
-@bot.event
-async def on_ready():
-    print(f"Bot は起動しました: {bot.user}")
-
-bot.run(TOKEN)
