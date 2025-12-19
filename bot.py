@@ -1,80 +1,97 @@
 import os
-import asyncio
 import discord
+from discord.ext import tasks
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
 
-# 環境変数から取得
+# -------------------------------
+# 環境変数 / 定数
+# -------------------------------
 TOKEN = os.getenv("TOKEN")
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
-
+BUY_LOG_CHANNEL_ID = int(os.getenv("BUY_LOG_CHANNEL"))
 SPREADSHEET_NAME = "Point shop"
 
-# Google Sheets 認証
-import json
-credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
-credentials = Credentials.from_service_account_info(credentials_dict)
-gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存シートを使用
+# サービスアカウント情報は JSON 文字列で環境変数に
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 
+# -------------------------------
+# Google Sheets 認証
+# -------------------------------
+scopes = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
+
+credentials_dict = None
+import json
+try:
+    credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
+except Exception as e:
+    print("SERVICE_ACCOUNT_JSONの読み込みエラー:", e)
+    exit(1)
+
+credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+gc = gspread.authorize(credentials)
+
+try:
+    worksheet = gc.open(SPREADSHEET_NAME).sheet1
+except gspread.SpreadsheetNotFound:
+    print(f"スプレッドシート '{SPREADSHEET_NAME}' が見つかりません。")
+    exit(1)
+
+# -------------------------------
+# Discord Client
+# -------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # ユーザー情報取得に必要
-
 client = discord.Client(intents=intents)
+
+# 既に記録済みのメッセージIDを保持
+existing_message_ids = set()
+all_records = worksheet.get_all_records()
+for record in all_records:
+    # ヘッダーは除外されるので直接Message IDを使う場合はカラム追加が必要
+    # 今回は "Reason" カラムに Message ID を入れる想定
+    if "Reason" in record:
+        existing_message_ids.add(record["Reason"])
 
 @client.event
 async def on_ready():
-    print(f"Bot は起動しました: {client.user}")
+    print(f'Logged in as {client.user}')
 
 @client.event
 async def on_message(message):
-    if message.channel.id != BUY_LOG_CHANNEL:
+    if message.channel.id != BUY_LOG_CHANNEL_ID:
+        return
+    if message.author.bot:
         return
 
-    # buy ログ判定
-    if not message.embeds:
-        return
-    embed = message.embeds[0]
-    if embed.title and "buy" not in embed.title.lower():
+    # メッセージIDで重複チェック
+    if str(message.id) in existing_message_ids:
         return
 
-    # ユーザーID → 名前変換
-    user_mention = None
-    cash = bank = reason = ""
-    try:
-        description = embed.description or ""
-        for line in description.split("\n"):
-            if line.startswith("**User:**"):
-                user_mention = line.split(":")[1].strip()
-            elif line.startswith("**Amount:**"):
-                parts = line.split("|")
-                cash = parts[0].replace("Cash:", "").strip(" `")
-                bank = parts[1].replace("Bank:", "").strip(" `")
-            elif line.startswith("**Reason:**"):
-                reason = line.split(":")[1].strip()
-    except Exception as e:
-        print("DEBUG: Embed parsing error:", e)
-        return
+    # ユーザーID → ユーザー名
+    username = str(message.author)
 
-    # ユーザー名に変換
-    user_name = user_mention
-    if user_mention:
-        if user_mention.startswith("<@") and user_mention.endswith(">"):
-            user_id = int(user_mention.replace("<@", "").replace("!", "").replace(">", ""))
-            member = message.guild.get_member(user_id)
-            if member:
-                user_name = member.name
+    # メッセージの内容を解析して必要な値を取得
+    # ここはBot用にカスタマイズしてください
+    action = "BUY"
+    cash = 0
+    bank = 0
+    reason = str(message.id)  # 重複チェック用にMessage IDを保存
 
-    # スプレッドシートに追記
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    row = [now, client.user.name, "buy", user_name, cash, bank, reason]
-    try:
-        worksheet.append_row(row)
-        print("スプレッドシートに書き込み完了:", row)
-    except Exception as e:
-        print("スプレッドシート書き込みエラー:", e)
+    # スプレッドシートに追加
+    worksheet.append_row([
+        str(message.created_at),
+        client.user.name,
+        action,
+        username,
+        cash,
+        bank,
+        reason
+    ])
+
+    # 登録済みに追加
+    existing_message_ids.add(reason)
 
 client.run(TOKEN)
