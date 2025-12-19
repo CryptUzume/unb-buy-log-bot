@@ -32,7 +32,9 @@ scopes = [
 
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
+
 worksheet = gc.open(SPREADSHEET_NAME).sheet1
+print("✅ Google Sheets 接続成功")
 
 # =====================
 # Discord Client
@@ -42,18 +44,13 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定用正規表現（例）
+# BUY 判定（緩和）
 # =====================
-BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
-
-# =====================
-# 既に処理したメッセージID保持
-# =====================
-processed_message_ids = set()
+BUY_PATTERN = re.compile(r"buy", re.IGNORECASE)
 
 @client.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
+    print(f"🤖 Logged in as {client.user}")
 
 @client.event
 async def on_message(message: discord.Message):
@@ -63,30 +60,32 @@ async def on_message(message: discord.Message):
     if message.channel.id != BUY_LOG_CHANNEL:
         return
 
-    if message.id in processed_message_ids:
-        return
+    print(f"📩 Message received: {message.content}")
 
     if not BUY_PATTERN.search(message.content):
+        print("⏭ BUY 判定に該当せず")
         return
 
-    processed_message_ids.add(message.id)
+    try:
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        bot_name = client.user.name
+        action = "BUY"
+        user_name = str(message.author)
+        cash = ""
+        bank = ""
+        reason = message.content
 
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    bot_name = client.user.name
-    action = "BUY"
-    user_name = str(message.author)
-    cash = ""
-    bank = ""
-    reason = message.content
+        print("📝 Sheets に書き込み開始")
 
-    worksheet.append_row([
-        timestamp,
-        bot_name,
-        action,
-        user_name,
-        cash,
-        bank,
-        reason
-    ], value_input_option="USER_ENTERED")
+        worksheet.append_row(
+            [timestamp, bot_name, action, user_name, cash, bank, reason],
+            value_input_option="USER_ENTERED"
+        )
+
+        print("✅ Sheets 書き込み完了")
+
+    except Exception as e:
+        print("❌ Sheets 書き込み失敗")
+        print(e)
 
 client.run(TOKEN)
