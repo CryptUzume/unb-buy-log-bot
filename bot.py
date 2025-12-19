@@ -38,38 +38,42 @@ print("✅ Google Sheets 接続成功")
 # Discord Client
 # =====================
 intents = discord.Intents.default()
+intents.message_content = True  # 念のため有効化
 client = discord.Client(intents=intents)
 
 processed_message_ids = set()
 
 # =====================
-# UnbelievaBoat BUY パース
+# BUY ログ抽出（Embed / Content 両対応）
 # =====================
-def parse_buy_from_embed(embed: discord.Embed):
-    text = ""
+def extract_text(message: discord.Message) -> str:
+    if message.embeds:
+        embed = message.embeds[0]
+        if embed.description:
+            return embed.description
+        if embed.fields:
+            return "\n".join(f.value for f in embed.fields)
 
-    if embed.description:
-        text = embed.description
-    elif embed.fields:
-        text = "\n".join(f.value for f in embed.fields)
+    if message.content:
+        return message.content
 
-    if not text:
+    return ""
+
+def parse_buy(text: str):
+    user = re.search(r"\*\*User:\*\*\s*(.+)", text)
+    cash = re.search(r"Cash:\s*`?(-?\d+)`?", text)
+    bank = re.search(r"Bank:\s*`?(-?\d+)`?", text)
+    reason = re.search(r"\*\*Reason:\*\*\s*(.+)", text)
+
+    if not (user and cash and bank):
         return None
 
-    user_match = re.search(r"\*\*User:\*\*\s*(.+)", text)
-    cash_match = re.search(r"Cash:\s*`?(-?\d+)`?", text)
-    bank_match = re.search(r"Bank:\s*`?(-?\d+)`?", text)
-    reason_match = re.search(r"\*\*Reason:\*\*\s*(.+)", text)
-
-    if not (user_match and cash_match and bank_match):
-        return None
-
-    user = user_match.group(1).strip()
-    cash = cash_match.group(1)
-    bank = bank_match.group(1)
-    reason = reason_match.group(1).strip() if reason_match else ""
-
-    return user, cash, bank, reason
+    return (
+        user.group(1).strip(),
+        cash.group(1),
+        bank.group(1),
+        reason.group(1).strip() if reason else ""
+    )
 
 @client.event
 async def on_ready():
@@ -77,6 +81,8 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
+    print(f"📩 message received: {message.id}")
+
     if message.channel.id != BUY_LOG_CHANNEL:
         return
 
@@ -86,11 +92,12 @@ async def on_message(message: discord.Message):
     if not message.author.bot:
         return
 
-    if not message.embeds:
-        return
+    text = extract_text(message)
+    print("🧾 抽出テキスト:", text)
 
-    result = parse_buy_from_embed(message.embeds[0])
+    result = parse_buy(text)
     if not result:
+        print("⏭ BUY 判定できず")
         return
 
     processed_message_ids.add(message.id)
@@ -106,6 +113,6 @@ async def on_message(message: discord.Message):
         value_input_option="USER_ENTERED"
     )
 
-    print("✅ BUY ログを Sheets に記録")
+    print("✅ Sheets 書き込み完了")
 
 client.run(TOKEN)
