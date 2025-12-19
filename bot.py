@@ -21,15 +21,13 @@ if not SERVICE_ACCOUNT_JSON:
     raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
 
 # =====================
-# Google Sheets 認証
+# Google Sheets
 # =====================
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
-
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
 worksheet = gc.open(SPREADSHEET_NAME).sheet1
@@ -40,38 +38,36 @@ print("✅ Google Sheets 接続成功")
 # Discord Client
 # =====================
 intents = discord.Intents.default()
-intents.message_content = False
 client = discord.Client(intents=intents)
 
 processed_message_ids = set()
 
 # =====================
-# Embed パース
+# UnbelievaBoat BUY パース
 # =====================
-def parse_unbelievaboat_buy(embed: discord.Embed):
-    user = ""
-    cash = ""
-    bank = ""
-    reason = ""
+def parse_buy_from_embed(embed: discord.Embed):
+    text = ""
 
-    for field in embed.fields:
-        name = field.name.lower()
-        value = field.value
+    if embed.description:
+        text = embed.description
+    elif embed.fields:
+        text = "\n".join(f.value for f in embed.fields)
 
-        if "user" in name:
-            user = value.strip()
+    if not text:
+        return None
 
-        elif "amount" in name:
-            cash_match = re.search(r"Cash:\s*`?(-?\d+)`?", value)
-            bank_match = re.search(r"Bank:\s*`?(-?\d+)`?", value)
+    user_match = re.search(r"\*\*User:\*\*\s*(.+)", text)
+    cash_match = re.search(r"Cash:\s*`?(-?\d+)`?", text)
+    bank_match = re.search(r"Bank:\s*`?(-?\d+)`?", text)
+    reason_match = re.search(r"\*\*Reason:\*\*\s*(.+)", text)
 
-            if cash_match:
-                cash = cash_match.group(1)
-            if bank_match:
-                bank = bank_match.group(1)
+    if not (user_match and cash_match and bank_match):
+        return None
 
-        elif "reason" in name:
-            reason = value.strip()
+    user = user_match.group(1).strip()
+    cash = cash_match.group(1)
+    bank = bank_match.group(1)
+    reason = reason_match.group(1).strip() if reason_match else ""
 
     return user, cash, bank, reason
 
@@ -93,15 +89,13 @@ async def on_message(message: discord.Message):
     if not message.embeds:
         return
 
-    embed = message.embeds[0]
-
-    user, cash, bank, reason = parse_unbelievaboat_buy(embed)
-
-    # BUY ログでなければ弾く
-    if not user or cash == "" or bank == "":
+    result = parse_buy_from_embed(message.embeds[0])
+    if not result:
         return
 
     processed_message_ids.add(message.id)
+
+    user, cash, bank, reason = result
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     bot_name = message.author.name
