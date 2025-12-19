@@ -1,58 +1,92 @@
 import os
+import json
 import discord
-from discord.ext import commands, tasks
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
+from discord.ext import commands
 
+# =====================
 # 環境変数
-TOKEN = os.getenv("TOKEN")  # Discord Bot Token
-SPREADSHEET_NAME = "Point shop"
+# =====================
+TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
+SPREADSHEET_NAME = "Point shop"
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-# Discord bot setup
+# =====================
+# Discord 設定
+# =====================
 intents = discord.Intents.default()
 intents.message_content = True
-client = commands.Bot(command_prefix="!", intents=intents)
+intents.members = True
 
-# Google Sheets setup
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")  # JSON文字列を直接環境変数に入れる
-gc = gspread.service_account_from_dict(eval(creds_json))
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存シートを使用
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Helper: ユーザーID → ユーザー名変換
-async def get_username(user_id):
-    user = await client.fetch_user(user_id)
-    return str(user)
+# =====================
+# Google Sheets 接続
+# =====================
+creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+gc = gspread.service_account_from_dict(creds_dict)
+worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存シートのみ使用
 
-@client.event
+# =====================
+# 起動ログ
+# =====================
+@bot.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
-    check_buy_log.start()
+    print(f"Logged in as {bot.user}")
 
-# 購入ログ確認（簡易例）
-@tasks.loop(seconds=60)
-async def check_buy_log():
-    channel = client.get_channel(BUY_LOG_CHANNEL)
-    if not channel:
-        print("Buy log channel not found.")
+# =====================
+# BUYログ取得
+# =====================
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
         return
 
-    async for message in channel.history(limit=50):
-        # すでにスプレッドシートにあるかは確認しない（同じユーザーでも全件記録）
-        try:
-            user_name = await get_username(message.author.id)
-            row = [
-                str(message.created_at),
-                client.user.name,
-                "BUY",
-                user_name,
-                "",  # Cash
-                "",  # Bank
-                message.content  # Reason
-            ]
-            worksheet.append_row(row)
-        except Exception as e:
-            print(f"Error writing row: {e}")
+    if message.channel.id != BUY_LOG_CHANNEL:
+        return
 
-client.run(TOKEN)
+    # BUY 以外は無視
+    if not message.content.lower().startswith("buy"):
+        return
+
+    # ユーザー名取得（表示名優先）
+    user_name = (
+        message.author.display_name
+        if isinstance(message.author, discord.Member)
+        else message.author.name
+    )
+
+    # ログ解析（想定形式）
+    # buy item cash bank reason
+    parts = message.content.split(maxsplit=4)
+
+    cash = ""
+    bank = ""
+    reason = ""
+
+    if len(parts) >= 3:
+        cash = parts[2]
+    if len(parts) >= 4:
+        bank = parts[3]
+    if len(parts) == 5:
+        reason = parts[4]
+
+    # スプレッドシート追記（ヘッダーなし）
+    worksheet.append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        bot.user.name,
+        "BUY",
+        user_name,
+        cash,
+        bank,
+        reason
+    ])
+
+    await bot.process_commands(message)
+
+# =====================
+# Bot 起動
+# =====================
+bot.run(TOKEN)
