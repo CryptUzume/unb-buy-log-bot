@@ -1,132 +1,96 @@
 import os
 import json
-import asyncio
-from datetime import datetime, timezone
-
 import discord
 import gspread
+from datetime import datetime
 
-# =========================
 # 環境変数
-# =========================
 TOKEN = os.getenv("DISCORD_TOKEN")
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME")
+SHEET_NAME = os.getenv("SHEET_NAME")
+TARGET_CHANNEL_ID = int(os.getenv("BUY_LOG_CHANNEL"))
 
-SPREADSHEET_NAME = os.getenv("SPREADSHEET_NAME", "buy-log")
-SHEET_NAME = os.getenv("SHEET_NAME", "log")
-
-# UnbelievaBoat の buy ログが流れるチャンネルID（必須）
-TARGET_CHANNEL_ID = int(os.getenv("TARGET_CHANNEL_ID"))
-
-# =========================
-# Google Sheets
-# =========================
-gc = gspread.service_account_from_dict(json.loads(SERVICE_ACCOUNT_JSON))
-sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
-
-# =========================
-# Discord
-# =========================
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+intents.messages = True
+intents.guilds = True
+intents.members = True  # メンバー情報取得
 
 client = discord.Client(intents=intents)
 
-# =========================
-# ユーティリティ
-# =========================
-def now_utc():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+# gspread 初期化
+gc = gspread.service_account_from_dict(json.loads(SERVICE_ACCOUNT_JSON))
+sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-def extract_buy_data(embed: discord.Embed):
-    """
-    UnbelievaBoat の buy embed から必要な情報だけ抜き出す
-    """
-    if not embed.description:
-        return None
+# シートヘッダー
+try:
+    sheet.append_row(["timestamp", "Bot Name", "Action", "User", "Cash", "Bank", "Reason"])
+except Exception:
+    pass
 
-    desc = embed.description
-
-    # buyログ以外は弾く
-    if "buy item" not in desc.lower():
-        return None
-
-    user_id = None
+def parse_buy_embed(embed: discord.Embed):
+    """BUY ログの埋め込みを解析"""
+    user_id = ""
     cash = ""
     bank = ""
     reason = ""
-
-    lines = desc.splitlines()
-    for line in lines:
-        if line.startswith("**User:**"):
-            # <@123456789>
-            user_id = line.split("<@")[1].split(">")[0]
-        elif line.startswith("**Amount:**"):
-            # Cash: `-5` | Bank: `0`
-            parts = line.replace("**Amount:**", "").split("|")
-            for p in parts:
-                if "Cash" in p:
-                    cash = p.split("`")[1]
-                if "Bank" in p:
-                    bank = p.split("`")[1]
-        elif line.startswith("**Reason:**"):
-            reason = line.replace("**Reason:**", "").strip()
-
-    if not user_id:
-        return None
-
+    
+    if embed.description:
+        lines = embed.description.split("\n")
+        for line in lines:
+            if line.startswith("**User:**"):
+                user_id = line.split("<@")[-1].split(">")[0].strip()
+            elif line.startswith("**Amount:**"):
+                amount = line.replace("**Amount:**", "").strip()
+                if "Cash:" in amount and "Bank:" in amount:
+                    parts = amount.split("|")
+                    cash = parts[0].replace("Cash:", "").strip(" `")
+                    bank = parts[1].replace("Bank:", "").strip(" `")
+            elif line.startswith("**Reason:**"):
+                reason = line.replace("**Reason:**", "").strip()
     return user_id, cash, bank, reason
 
-async def resolve_username(guild: discord.Guild, user_id: str):
-    member = guild.get_member(int(user_id))
-    if member:
-        return f"{member.display_name}"
+async def resolve_user_name(guild: discord.Guild, user_id: str):
+    """ユーザーIDをユーザー名に変換"""
     try:
-        user = await client.fetch_user(int(user_id))
-        return f"{user.name}"
-    except:
-        return user_id  # 最悪ID
+        member = await guild.fetch_member(int(user_id))
+        return str(member)
+    except Exception:
+        return user_id  # 取得できない場合はIDのまま
 
-# =========================
-# イベント
-# =========================
 @client.event
 async def on_ready():
     print(f"Bot は起動しました: {client.user}")
 
 @client.event
-async def on_message(message: discord.Message):
-    # 対象チャンネルのみ
+async def on_message(message):
+    if message.author.bot:
+        return
+
     if message.channel.id != TARGET_CHANNEL_ID:
         return
 
-    # Bot自身 or embed無しは無視
     if not message.embeds:
         return
 
-    embed = message.embeds[0]
-    data = extract_buy_data(embed)
-    if not data:
-        return
+    for embed in message.embeds:
+        user_id, cash, bank, reason = parse_buy_embed(embed)
+        if not reason:
+            continue
 
-    user_id, cash, bank, reason = data
-    username = await resolve_username(message.guild, user_id)
+        # ユーザーID → ユーザー名
+        user_name = await resolve_user_name(message.guild, user_id)
 
-    row = [
-        now_utc(),                 # timestamp
-        str(message.author),       # Bot Name
-        "BUY",                     # Action
-        username,                  # User
-        cash,                      # Cash
-        bank,                      # Bank
-        reason                     # Reason
-    ]
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        bot_name = client.user.name
+        action = "buy"
 
-    sheet.append_row(row, value_input_option="USER_ENTERED")
-    print("スプレッドシートに書き込み:", row)
+        row = [timestamp, bot_name, action, user_name, cash, bank, reason]
 
-# =========================
-# 起動
-# =========================
+        try:
+            sheet.append_row(row)
+            print("スプレッドシートに書き込み完了:", row)
+        except Exception as e:
+            print("スプレッドシート書き込みエラー:", e)
+
 client.run(TOKEN)
