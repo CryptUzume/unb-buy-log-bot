@@ -1,97 +1,58 @@
 import os
 import discord
-from discord.ext import tasks
+from discord.ext import commands, tasks
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
 
-# -------------------------------
-# 環境変数 / 定数
-# -------------------------------
-TOKEN = os.getenv("TOKEN")
-BUY_LOG_CHANNEL_ID = int(os.getenv("BUY_LOG_CHANNEL"))
+# 環境変数
+TOKEN = os.getenv("TOKEN")  # Discord Bot Token
 SPREADSHEET_NAME = "Point shop"
+BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
 
-# サービスアカウント情報は JSON 文字列で環境変数に
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
-
-# -------------------------------
-# Google Sheets 認証
-# -------------------------------
-scopes = [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
-]
-
-credentials_dict = None
-import json
-try:
-    credentials_dict = json.loads(SERVICE_ACCOUNT_JSON)
-except Exception as e:
-    print("SERVICE_ACCOUNT_JSONの読み込みエラー:", e)
-    exit(1)
-
-credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
-gc = gspread.authorize(credentials)
-
-try:
-    worksheet = gc.open(SPREADSHEET_NAME).sheet1
-except gspread.SpreadsheetNotFound:
-    print(f"スプレッドシート '{SPREADSHEET_NAME}' が見つかりません。")
-    exit(1)
-
-# -------------------------------
-# Discord Client
-# -------------------------------
+# Discord bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
+client = commands.Bot(command_prefix="!", intents=intents)
 
-# 既に記録済みのメッセージIDを保持
-existing_message_ids = set()
-all_records = worksheet.get_all_records()
-for record in all_records:
-    # ヘッダーは除外されるので直接Message IDを使う場合はカラム追加が必要
-    # 今回は "Reason" カラムに Message ID を入れる想定
-    if "Reason" in record:
-        existing_message_ids.add(record["Reason"])
+# Google Sheets setup
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")  # JSON文字列を直接環境変数に入れる
+gc = gspread.service_account_from_dict(eval(creds_json))
+worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存シートを使用
+
+# Helper: ユーザーID → ユーザー名変換
+async def get_username(user_id):
+    user = await client.fetch_user(user_id)
+    return str(user)
 
 @client.event
 async def on_ready():
-    print(f'Logged in as {client.user}')
+    print(f"Logged in as {client.user}")
+    check_buy_log.start()
 
-@client.event
-async def on_message(message):
-    if message.channel.id != BUY_LOG_CHANNEL_ID:
-        return
-    if message.author.bot:
-        return
-
-    # メッセージIDで重複チェック
-    if str(message.id) in existing_message_ids:
+# 購入ログ確認（簡易例）
+@tasks.loop(seconds=60)
+async def check_buy_log():
+    channel = client.get_channel(BUY_LOG_CHANNEL)
+    if not channel:
+        print("Buy log channel not found.")
         return
 
-    # ユーザーID → ユーザー名
-    username = str(message.author)
-
-    # メッセージの内容を解析して必要な値を取得
-    # ここはBot用にカスタマイズしてください
-    action = "BUY"
-    cash = 0
-    bank = 0
-    reason = str(message.id)  # 重複チェック用にMessage IDを保存
-
-    # スプレッドシートに追加
-    worksheet.append_row([
-        str(message.created_at),
-        client.user.name,
-        action,
-        username,
-        cash,
-        bank,
-        reason
-    ])
-
-    # 登録済みに追加
-    existing_message_ids.add(reason)
+    async for message in channel.history(limit=50):
+        # すでにスプレッドシートにあるかは確認しない（同じユーザーでも全件記録）
+        try:
+            user_name = await get_username(message.author.id)
+            row = [
+                str(message.created_at),
+                client.user.name,
+                "BUY",
+                user_name,
+                "",  # Cash
+                "",  # Bank
+                message.content  # Reason
+            ]
+            worksheet.append_row(row)
+        except Exception as e:
+            print(f"Error writing row: {e}")
 
 client.run(TOKEN)
