@@ -8,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数（変更禁止）
+# 環境変数
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
@@ -32,8 +32,8 @@ scopes = [
 
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-
 worksheet = gc.open(SPREADSHEET_NAME).sheet1
+
 print("✅ Google Sheets 接続成功")
 
 # =====================
@@ -44,9 +44,28 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定（緩和）
+# BUY 判定
 # =====================
-BUY_PATTERN = re.compile(r"buy", re.IGNORECASE)
+BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
+
+processed_message_ids = set()
+
+def extract_message_text(message: discord.Message) -> str:
+    """通常メッセージ + Embed を全部文字列化"""
+    texts = []
+
+    if message.content:
+        texts.append(message.content)
+
+    for embed in message.embeds:
+        if embed.title:
+            texts.append(embed.title)
+        if embed.description:
+            texts.append(embed.description)
+        for field in embed.fields:
+            texts.append(f"{field.name}: {field.value}")
+
+    return "\n".join(texts)
 
 @client.event
 async def on_ready():
@@ -54,38 +73,37 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
     if message.channel.id != BUY_LOG_CHANNEL:
         return
 
-    print(f"📩 Message received: {message.content}")
+    if message.id in processed_message_ids:
+        return
 
-    if not BUY_PATTERN.search(message.content):
+    full_text = extract_message_text(message)
+
+    print(f"📩 Message received:\n{full_text}")
+
+    if not BUY_PATTERN.search(full_text):
         print("⏭ BUY 判定に該当せず")
         return
 
-    try:
-        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        bot_name = client.user.name
-        action = "BUY"
-        user_name = str(message.author)
-        cash = ""
-        bank = ""
-        reason = message.content
+    processed_message_ids.add(message.id)
 
-        print("📝 Sheets に書き込み開始")
+    print("📝 Sheets に書き込み開始")
 
-        worksheet.append_row(
-            [timestamp, bot_name, action, user_name, cash, bank, reason],
-            value_input_option="USER_ENTERED"
-        )
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    bot_name = message.author.name
+    action = "BUY"
+    user_name = str(message.author)
+    cash = ""
+    bank = ""
+    reason = full_text
 
-        print("✅ Sheets 書き込み完了")
+    worksheet.append_row(
+        [timestamp, bot_name, action, user_name, cash, bank, reason],
+        value_input_option="USER_ENTERED"
+    )
 
-    except Exception as e:
-        print("❌ Sheets 書き込み失敗")
-        print(e)
+    print("✅ Sheets 書き込み完了")
 
 client.run(TOKEN)
