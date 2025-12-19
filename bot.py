@@ -1,45 +1,61 @@
 import os
 import json
+import re
+from datetime import datetime
+
 import discord
 import gspread
-from datetime import datetime
-from discord.ext import commands
+from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数
+# 環境変数（変更禁止）
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
 SPREADSHEET_NAME = "Point shop"
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+
+if not TOKEN:
+    raise RuntimeError("TOKEN が設定されていません")
+if not SERVICE_ACCOUNT_JSON:
+    raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
 
 # =====================
-# Discord 設定
+# Google Sheets 認証
+# =====================
+creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+
+scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+gc = gspread.authorize(credentials)
+worksheet = gc.open(SPREADSHEET_NAME).sheet1
+
+# =====================
+# Discord Client
 # =====================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
 
 # =====================
-# Google Sheets 接続
+# BUY 判定用正規表現（例）
 # =====================
-creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-gc = gspread.service_account_from_dict(creds_dict)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存シートのみ使用
+BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
 
 # =====================
-# 起動ログ
+# 既に処理したメッセージID保持
 # =====================
-@bot.event
+processed_message_ids = set()
+
+@client.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
+    print(f"Logged in as {client.user}")
 
-# =====================
-# BUYログ取得
-# =====================
-@bot.event
+@client.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
@@ -47,46 +63,30 @@ async def on_message(message: discord.Message):
     if message.channel.id != BUY_LOG_CHANNEL:
         return
 
-    # BUY 以外は無視
-    if not message.content.lower().startswith("buy"):
+    if message.id in processed_message_ids:
         return
 
-    # ユーザー名取得（表示名優先）
-    user_name = (
-        message.author.display_name
-        if isinstance(message.author, discord.Member)
-        else message.author.name
-    )
+    if not BUY_PATTERN.search(message.content):
+        return
 
-    # ログ解析（想定形式）
-    # buy item cash bank reason
-    parts = message.content.split(maxsplit=4)
+    processed_message_ids.add(message.id)
 
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    bot_name = client.user.name
+    action = "BUY"
+    user_name = str(message.author)
     cash = ""
     bank = ""
-    reason = ""
+    reason = message.content
 
-    if len(parts) >= 3:
-        cash = parts[2]
-    if len(parts) >= 4:
-        bank = parts[3]
-    if len(parts) == 5:
-        reason = parts[4]
-
-    # スプレッドシート追記（ヘッダーなし）
     worksheet.append_row([
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        bot.user.name,
-        "BUY",
+        timestamp,
+        bot_name,
+        action,
         user_name,
         cash,
         bank,
         reason
-    ])
+    ], value_input_option="USER_ENTERED")
 
-    await bot.process_commands(message)
-
-# =====================
-# Bot 起動
-# =====================
-bot.run(TOKEN)
+client.run(TOKEN)
