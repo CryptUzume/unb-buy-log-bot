@@ -1,14 +1,14 @@
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import discord
 import gspread
 from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数
+# 環境変数（変更禁止）
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
@@ -30,7 +30,7 @@ scopes = [
 ]
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1
+worksheet = gc.open(SPREADSHEET_NAME).worksheet("シート1")  # 日本語シート名対応
 
 # =====================
 # Discord Client
@@ -40,11 +40,14 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定用正規表現
+# BUY 判定用正規表現（埋め込み）
 # =====================
-BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
-AMOUNT_PATTERN = re.compile(r"Cash: `(-?\d+)` \| Bank: `(-?\d+)`")
-REASON_PATTERN = re.compile(r"buy item \(.+?\)")
+BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
+
+# =====================
+# JST 設定
+# =====================
+JST = timezone(timedelta(hours=9))
 
 # =====================
 # 既に処理したメッセージID保持
@@ -54,11 +57,11 @@ processed_message_ids = set()
 @client.event
 async def on_ready():
     print(f"🤖 Logged in as {client.user}")
-    print("✅ Google Sheets 接続成功")
+    print(f"✅ Google Sheets 接続成功")
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot is False:
+    if message.author.bot:
         return
 
     if message.channel.id != BUY_LOG_CHANNEL:
@@ -67,65 +70,25 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    # 埋め込みがない場合は無視
+    # 埋め込みから BUY ログ判定
     if not message.embeds:
-        print("⏭ 埋め込みなしのためBUY判定できず")
         return
 
-    embed = message.embeds[0]
-    embed_text = embed.description or ""
+    for embed in message.embeds:
+        desc = embed.description
+        if not desc or not BUY_PATTERN.search(desc):
+            continue
 
-    # field がある場合は全て結合
-    for f in embed.fields:
-        embed_text += "\n" + (f.value or "")
+        processed_message_ids.add(message.id)
 
-    if not BUY_PATTERN.search(embed_text):
-        print("⏭ BUY 判定できず")
-        return
+        # 埋め込みのテキストから情報抽出
+        # 例の形式に合わせて正規表現で抽出
+        user_match = re.search(r"\*\*User:\*\* <@(\d+)>", desc)
+        cash_match = re.search(r"Cash: `(-?\d+)`", desc)
+        bank_match = re.search(r"Bank: `(-?\d+)`", desc)
+        reason_match = re.search(r"\*\*Reason:\*\* (.+)", desc)
 
-    processed_message_ids.add(message.id)
-
-    # User抽出
-    user_id_match = re.search(r"<@!?(\d+)>", embed_text)
-    if user_id_match:
-        user_id = int(user_id_match.group(1))
-        try:
-            user_obj = await client.fetch_user(user_id)
-            user_name = str(user_obj)
-        except:
-            user_name = f"<@{user_id}>"
-    else:
-        user_name = "Unknown"
-
-    # Cash / Bank 抽出
-    cash = bank = 0
-    amount_match = AMOUNT_PATTERN.search(embed_text)
-    if amount_match:
-        cash = int(amount_match.group(1))
-        bank = int(amount_match.group(2))
-
-    # Reason 抽出（buy item の部分だけ）
-    reason_match = REASON_PATTERN.search(embed_text)
-    reason = reason_match.group(0) if reason_match else ""
-
-    # スプレッドシートに書き込み
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    bot_name = client.user.name
-    action = "BUY"
-
-    print(f"📩 User: {user_name} | Cash: {cash} | Bank: {bank} | Reason: {reason}")
-    print("📝 Sheets に書き込み開始")
-
-    worksheet.append_row([
-        timestamp,
-        bot_name,
-        action,
-        user_name,
-        cash,
-        bank,
-        reason
-    ], value_input_option="USER_ENTERED")
-
-    print("✅ Sheets 書き込み完了")
-
-client.run(TOKEN)
+        user_id = user_match.group(1) if user_match else "Unknown"
+        user_name = str(message.guild.get_member(int(user_id))) if message.guild.get_member(int(user_id)) else f"<@{user_id}>"
+        cash = cash_match.group(1) if cash_match else ""
+        bank = bank_match.group(1) if bank_match else
