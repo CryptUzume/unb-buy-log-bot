@@ -8,34 +8,29 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数
+# 環境変数（変更禁止）
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
 SPREADSHEET_NAME = "Point shop"
-WORKSHEET_NAME = "シート1"
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 
-# UnbelievaBoat Bot ID
-UNBELIEVABOAT_BOT_ID = 356950275044122625
+if not TOKEN:
+    raise RuntimeError("TOKEN が設定されていません")
+if not SERVICE_ACCOUNT_JSON:
+    raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
 
 # =====================
-# Google Sheets
+# Google Sheets 認証
 # =====================
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
-
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-
-spreadsheet = gc.open(SPREADSHEET_NAME)
-worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
-
-print("✅ Google Sheets 接続成功")
+worksheet = gc.open(SPREADSHEET_NAME).sheet1  # シート名は「シート1」でも sheet1 で OK
 
 # =====================
 # Discord Client
@@ -45,13 +40,13 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# 正規表現
+# BUY 判定用正規表現（例）
 # =====================
-BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
-CASH_PATTERN = re.compile(r"Cash:\s*`([+-]?[0-9,]+)`")
-BANK_PATTERN = re.compile(r"Bank:\s*`([+-]?[0-9,]+)`")
-USER_PATTERN = re.compile(r"<@(\d+)>")
+BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
 
+# =====================
+# 既に処理したメッセージID保持
+# =====================
 processed_message_ids = set()
 
 @client.event
@@ -60,61 +55,75 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    print(f"📩 message received: {message.id}")
-
-    if message.channel.id != BUY_LOG_CHANNEL:
+    if message.author.bot:
         return
 
-    if message.author.id != UNBELIEVABOAT_BOT_ID:
+    if message.channel.id != BUY_LOG_CHANNEL:
         return
 
     if message.id in processed_message_ids:
         return
 
-    if not message.embeds:
+    # =====================
+    # BUY 判定（コンテンツ or 埋め込み）
+    # =====================
+    buy_detected = False
+
+    # message.content をチェック
+    if message.content and BUY_PATTERN.search(message.content):
+        buy_detected = True
+
+    # 埋め込みをチェック
+    if not buy_detected and message.embeds:
+        for embed in message.embeds:
+            if embed.description and BUY_PATTERN.search(embed.description):
+                buy_detected = True
+                break
+            for field in embed.fields:
+                if BUY_PATTERN.search(field.value):
+                    buy_detected = True
+                    break
+            if buy_detected:
+                break
+
+    if not buy_detected:
+        print(f"⏭ BUY 判定できず\n📩 message received: {message.id}")
         return
 
     processed_message_ids.add(message.id)
 
-    embed = message.embeds[0]
-
-    parts = []
-
-    if embed.description:
-        parts.append(embed.description)
-
-    if embed.fields:
-        parts.extend(f.value for f in embed.fields)
-
-    text = "\n".join(parts).strip()
-
-    print(f"🧾 抽出テキスト:\n{text}")
-
-    if not BUY_PATTERN.search(text):
-        print("⏭ BUY 判定できず")
-        return
-
+    # =====================
+    # 埋め込み情報を抽出
+    # =====================
+    reason = message.content
     cash = ""
     bank = ""
-    user = ""
 
-    if m := CASH_PATTERN.search(text):
-        cash = m.group(1).replace(",", "")
-    if m := BANK_PATTERN.search(text):
-        bank = m.group(1).replace(",", "")
-    if m := USER_PATTERN.search(text):
-        user = m.group(1)
+    if message.embeds:
+        for embed in message.embeds:
+            if embed.description:
+                reason = embed.description
+            elif embed.fields:
+                reason = "\n".join(f"{f.name}: {f.value}" for f in embed.fields)
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    bot_name = client.user.name
+    action = "BUY"
+    user_name = str(message.author)
 
+    print(f"📝 Sheets に書き込み開始: {user_name} / {reason}")
+
+    # =====================
+    # Sheets 書き込み
+    # =====================
     worksheet.append_row([
         timestamp,
-        message.author.name,
-        "BUY",
-        user,
+        bot_name,
+        action,
+        user_name,
         cash,
         bank,
-        text
+        reason
     ], value_input_option="USER_ENTERED")
 
     print("✅ Sheets 書き込み完了")
