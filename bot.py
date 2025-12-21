@@ -1,14 +1,14 @@
 import os
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 import gspread
 from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数
+# 環境変数（変更禁止）
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
@@ -24,13 +24,15 @@ if not SERVICE_ACCOUNT_JSON:
 # Google Sheets 認証
 # =====================
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
+
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).worksheet("シート1")
+worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存の1つ目のシートを使用
 
 # =====================
 # Discord Client
@@ -40,18 +42,22 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定用正規表現
+# BUY 判定用正規表現（埋め込み専用）
 # =====================
-BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
-USER_PATTERN = re.compile(r"\*\*User:\*\* <@(\d+)>")
-CASH_PATTERN = re.compile(r"Cash: `(-?\d+)`")
-BANK_PATTERN = re.compile(r"Bank: `(-?\d+)`")
-REASON_PATTERN = re.compile(r"Reason: (.+)")
+EMBED_PATTERN = re.compile(
+    r"\*\*User:\*\* <@(\d+)>\s+"
+    r"\*\*Amount:\*\* Cash: `(-?\d+)` \| Bank: `(-?\d+)`\s+"
+    r"\*\*Reason:\*\* (.+)",
+    re.DOTALL
+)
 
 # =====================
 # 既に処理したメッセージID保持
 # =====================
 processed_message_ids = set()
+
+# 日本時間のタイムゾーン
+JST = timezone(timedelta(hours=9))
 
 @client.event
 async def on_ready():
@@ -60,13 +66,8 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
-        # Botメッセージのみ処理（埋め込みBuyログ）
-        if not message.embeds:
-            return
-    else:
-        # 人間のメッセージは無視
-        return
+    if message.author.bot is False:
+        return  # 一般ユーザーは無視
 
     if message.channel.id != BUY_LOG_CHANNEL:
         return
@@ -74,44 +75,36 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
+    processed_message_ids.add(message.id)
+
+    # 埋め込みだけを対象にする
+    if not message.embeds:
+        print("⏭ BUY 判定できず（埋め込みなし）")
+        return
+
     for embed in message.embeds:
         embed_text = embed.description or ""
-        if not BUY_PATTERN.search(embed_text):
+        match = EMBED_PATTERN.search(embed_text)
+        if not match:
+            print(f"⏭ BUY 判定できず\n📩 message received: {message.id}")
             continue
 
-        processed_message_ids.add(message.id)
-
-        # ======== 抽出 ========
-        user_match = USER_PATTERN.search(embed_text)
-        cash_match = CASH_PATTERN.search(embed_text)
-        bank_match = BANK_PATTERN.search(embed_text)
-        reason_match = REASON_PATTERN.search(embed_text)
-
-        user_id = user_match.group(1) if user_match else "Unknown"
-        user_obj = message.guild.get_member(int(user_id)) if message.guild else None
-        user_name = str(user_obj) if user_obj else f"<@{user_id}>"
-        cash = cash_match.group(1) if cash_match else ""
-        bank = bank_match.group(1) if bank_match else ""
-        reason = reason_match.group(1) if reason_match else ""
-
-        # 日本時間で timestamp
-        timestamp = (datetime.utcnow() + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S")
+        user_id, cash, bank, reason = match.groups()
+        timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
         bot_name = client.user.name
         action = "BUY"
 
-        print(f"📩 User: {user_name} | Cash: {cash} | Bank: {bank} | Reason: {reason}")
-        print("📝 Sheets に書き込み開始")
-
+        # Google Sheets に書き込み
+        print(f"📝 Sheets に書き込み開始\n📩 User: <@{user_id}> | Cash: {cash} | Bank: {bank} | Reason: {reason}")
         worksheet.append_row([
             timestamp,
             bot_name,
             action,
-            user_name,
+            f"<@{user_id}>",
             cash,
             bank,
             reason
         ], value_input_option="USER_ENTERED")
-
         print("✅ Sheets 書き込み完了")
 
 client.run(TOKEN)
