@@ -13,6 +13,7 @@ from google.oauth2.service_account import Credentials
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
 SPREADSHEET_NAME = "Point shop"
+WORKSHEET_NAME = "シート1"
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 
 if not TOKEN:
@@ -30,20 +31,12 @@ scopes = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-credentials = Credentials.from_service_account_info(
-    creds_dict,
-    scopes=scopes
-)
-
+credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
 
-# 🔴 ここが重要（ID確認）
-sh = gc.open(SPREADSHEET_NAME)
-print("📄 Spreadsheet Title:", sh.title)
-print("🆔 Spreadsheet ID:", sh.id)
-print("📂 Spreadsheet URL: https://docs.google.com/spreadsheets/d/" + sh.id)
+spreadsheet = gc.open(SPREADSHEET_NAME)
+worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
 
-worksheet = sh.sheet1
 print("✅ Google Sheets 接続成功")
 
 # =====================
@@ -54,9 +47,12 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定用
+# 正規表現
 # =====================
 BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
+CASH_PATTERN = re.compile(r"Cash:\s*`([+-]?\d+)`")
+BANK_PATTERN = re.compile(r"Bank:\s*`([+-]?\d+)`")
+USER_PATTERN = re.compile(r"<@(\d+)>")
 
 processed_message_ids = set()
 
@@ -75,34 +71,44 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    processed_message_ids.add(message.id)
-
-    text = ""
-
-    if message.embeds:
-        embed = message.embeds[0]
-        text = (embed.description or "")
-    else:
-        text = message.content
-
-    print("🧾 抽出テキスト:", text)
-
-    if not BUY_PATTERN.search(text):
-        print("⏭ BUY 判定できず")
+    if not message.embeds:
         return
 
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    bot_name = message.author.name
-    action = "BUY"
-    user_name = ""
+    processed_message_ids.add(message.id)
+
+    embed = message.embeds[0]
+
+    # fields だけを結合
+    text = "\n".join(f.value for f in embed.fields)
+
+    print(f"🧾 抽出テキスト:\n{text}")
+
+    if not BUY_PATTERN.search(text):
+        print("⏭ BUYログではない")
+        return
+
     cash = ""
     bank = ""
-    reason = text
+    user = ""
 
-    worksheet.append_row(
-        [timestamp, bot_name, action, user_name, cash, bank, reason],
-        value_input_option="USER_ENTERED"
-    )
+    if m := CASH_PATTERN.search(text):
+        cash = m.group(1)
+    if m := BANK_PATTERN.search(text):
+        bank = m.group(1)
+    if m := USER_PATTERN.search(text):
+        user = m.group(1)
+
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    worksheet.append_row([
+        timestamp,
+        message.author.name,
+        "BUY",
+        user,
+        cash,
+        bank,
+        text
+    ], value_input_option="USER_ENTERED")
 
     print("✅ Sheets 書き込み完了")
 
