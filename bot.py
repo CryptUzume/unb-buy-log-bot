@@ -44,7 +44,7 @@ client = discord.Client(intents=intents)
 # =====================
 BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
 AMOUNT_PATTERN = re.compile(r"Cash: `(-?\d+)` \| Bank: `(-?\d+)`")
-REASON_PATTERN = re.compile(r"Reason: (.+)")
+REASON_PATTERN = re.compile(r"buy item \(.+?\)")
 
 # =====================
 # 既に処理したメッセージID保持
@@ -77,13 +77,12 @@ async def on_message(message: discord.Message):
 
     # field がある場合は全て結合
     for f in embed.fields:
-        embed_text += f"\n" + (f.value or "")
+        embed_text += "\n" + (f.value or "")
 
     if not BUY_PATTERN.search(embed_text):
         print("⏭ BUY 判定できず")
         return
 
-    # メッセージIDを記録
     processed_message_ids.add(message.id)
 
     # User抽出
@@ -105,9 +104,9 @@ async def on_message(message: discord.Message):
         cash = int(amount_match.group(1))
         bank = int(amount_match.group(2))
 
-    # Reason 抽出
+    # Reason 抽出（buy item の部分だけ）
     reason_match = REASON_PATTERN.search(embed_text)
-    reason = reason_match.group(1) if reason_match else embed_text
+    reason = reason_match.group(0) if reason_match else ""
 
     # スプレッドシートに書き込み
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
