@@ -8,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # =====================
-# 環境変数（変更禁止）
+# 環境変数
 # =====================
 TOKEN = os.getenv("TOKEN")
 BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
@@ -30,7 +30,7 @@ scopes = [
 ]
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # シート名は「シート1」でも sheet1 で OK
+worksheet = gc.open(SPREADSHEET_NAME).worksheet("シート1")  # 正確なシート名
 
 # =====================
 # Discord Client
@@ -40,13 +40,12 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # =====================
-# BUY 判定用正規表現（例）
+# BUY 判定用正規表現
 # =====================
-BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
+CASH_PATTERN = re.compile(r"Cash: `(-?\d+)`")
+BANK_PATTERN = re.compile(r"Bank: `(-?\d+)`")
+REASON_PATTERN = re.compile(r"Reason: (.+)")
 
-# =====================
-# 既に処理したメッセージID保持
-# =====================
 processed_message_ids = set()
 
 @client.event
@@ -55,7 +54,7 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    if message.author.bot is False:
         return
 
     if message.channel.id != BUY_LOG_CHANNEL:
@@ -64,62 +63,42 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    # =====================
-    # BUY 判定（コンテンツ or 埋め込み）
-    # =====================
+    processed_message_ids.add(message.id)
+
     buy_detected = False
+    cash = bank = reason = ""
 
-    # message.content をチェック
-    if message.content and BUY_PATTERN.search(message.content):
-        buy_detected = True
-
-    # 埋め込みをチェック
-    if not buy_detected and message.embeds:
+    # メッセージ埋め込みを確認
+    if message.embeds:
         for embed in message.embeds:
-            if embed.description and BUY_PATTERN.search(embed.description):
-                buy_detected = True
-                break
+            text = ""
+            if embed.description:
+                text += embed.description + "\n"
             for field in embed.fields:
-                if BUY_PATTERN.search(field.value):
-                    buy_detected = True
-                    break
-            if buy_detected:
-                break
+                text += f"{field.name}: {field.value}\n"
+
+            if "buy item" in text.lower():  # Buyログ判定
+                buy_detected = True
+                cash_match = CASH_PATTERN.search(text)
+                bank_match = BANK_PATTERN.search(text)
+                reason_match = REASON_PATTERN.search(text)
+
+                cash = cash_match.group(1) if cash_match else ""
+                bank = bank_match.group(1) if bank_match else ""
+                reason = reason_match.group(1) if reason_match else text.strip()
 
     if not buy_detected:
         print(f"⏭ BUY 判定できず\n📩 message received: {message.id}")
         return
 
-    processed_message_ids.add(message.id)
-
-    # =====================
-    # 埋め込み情報を抽出
-    # =====================
-    reason = message.content
-    cash = ""
-    bank = ""
-
-    if message.embeds:
-        for embed in message.embeds:
-            if embed.description:
-                reason = embed.description
-            elif embed.fields:
-                reason = "\n".join(f"{f.name}: {f.value}" for f in embed.fields)
-
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    bot_name = client.user.name
-    action = "BUY"
-    user_name = str(message.author)
+    bot_name = str(message.author)
+    user_name = ""  # IDを名前に変換したい場合は後で処理可能
 
-    print(f"📝 Sheets に書き込み開始: {user_name} / {reason}")
-
-    # =====================
-    # Sheets 書き込み
-    # =====================
     worksheet.append_row([
         timestamp,
         bot_name,
-        action,
+        "BUY",
         user_name,
         cash,
         bank,
