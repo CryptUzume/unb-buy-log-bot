@@ -16,11 +16,11 @@ SPREADSHEET_NAME = "Point shop"
 WORKSHEET_NAME = "シート1"
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 
-# UnbelievaBoat の Bot ID
+# UnbelievaBoat Bot ID
 UNBELIEVABOAT_BOT_ID = 356950275044122625
 
 # =====================
-# Google Sheets 認証
+# Google Sheets
 # =====================
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
 
@@ -62,11 +62,9 @@ async def on_ready():
 async def on_message(message: discord.Message):
     print(f"📩 message received: {message.id}")
 
-    # チャンネル制限
     if message.channel.id != BUY_LOG_CHANNEL:
         return
 
-    # UnbelievaBoat 以外の Bot / User は無視
     if message.author.id != UNBELIEVABOAT_BOT_ID:
         return
 
@@ -74,14 +72,22 @@ async def on_message(message: discord.Message):
         return
 
     if not message.embeds:
-        print("⏭ embed なし")
         return
 
     processed_message_ids.add(message.id)
 
     embed = message.embeds[0]
 
-    text = "\n".join(f.value for f in embed.fields)
+    parts = []
+
+    if embed.description:
+        parts.append(embed.description)
+
+    if embed.fields:
+        parts.extend(f.value for f in embed.fields)
+
+    text = "\n".join(parts).strip()
+
     print(f"🧾 抽出テキスト:\n{text}")
 
     if not BUY_PATTERN.search(text):
