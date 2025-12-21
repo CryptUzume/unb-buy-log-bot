@@ -30,41 +30,35 @@ scopes = [
 ]
 credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
 gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存のシートを使用
+worksheet = gc.open(SPREADSHEET_NAME).sheet1
 
 # =====================
 # Discord Client
 # =====================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.guilds = True
-intents.members = True  # ユーザー名変換に必須
 client = discord.Client(intents=intents)
 
 # =====================
 # BUY 判定用正規表現
 # =====================
-BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
+BUY_PATTERN = re.compile(r"\bbuy\b", re.IGNORECASE)
+AMOUNT_PATTERN = re.compile(r"Cash: `(-?\d+)` \| Bank: `(-?\d+)`")
+REASON_PATTERN = re.compile(r"Reason: (.+)")
 
 # =====================
 # 既に処理したメッセージID保持
 # =====================
 processed_message_ids = set()
 
-# =====================
-# on_ready
-# =====================
 @client.event
 async def on_ready():
     print(f"🤖 Logged in as {client.user}")
     print("✅ Google Sheets 接続成功")
 
-# =====================
-# メッセージ受信時
-# =====================
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    if message.author.bot is False:
         return
 
     if message.channel.id != BUY_LOG_CHANNEL:
@@ -73,50 +67,56 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    # 埋め込みからBUYログを抽出
+    # 埋め込みがない場合は無視
     if not message.embeds:
-        return  # 埋め込みがない場合は無視
+        print("⏭ 埋め込みなしのためBUY判定できず")
+        return
 
     embed = message.embeds[0]
     embed_text = embed.description or ""
 
+    # field がある場合は全て結合
+    for f in embed.fields:
+        embed_text += f"\n" + (f.value or "")
+
     if not BUY_PATTERN.search(embed_text):
-        print(f"⏭ BUY 判定できず")
+        print("⏭ BUY 判定できず")
         return
 
+    # メッセージIDを記録
     processed_message_ids.add(message.id)
 
-    # ====== ユーザーID抽出と表示名変換 ======
-    user_match = re.search(r"<@!?(\d+)>", embed_text)
-    if user_match:
-        user_id = int(user_match.group(1))
-        member = message.guild.get_member(user_id)
-        if member:
-            user_name = member.display_name
-        else:
+    # User抽出
+    user_id_match = re.search(r"<@!?(\d+)>", embed_text)
+    if user_id_match:
+        user_id = int(user_id_match.group(1))
+        try:
+            user_obj = await client.fetch_user(user_id)
+            user_name = str(user_obj)
+        except:
             user_name = f"<@{user_id}>"
     else:
         user_name = "Unknown"
 
-    # ====== 金額・理由抽出 ======
-    cash_match = re.search(r"Cash:\s*`(-?\d+)`", embed_text)
-    bank_match = re.search(r"Bank:\s*`(-?\d+)`", embed_text)
-    reason_match = re.search(r"Reason:\s*(.+)", embed_text)
+    # Cash / Bank 抽出
+    cash = bank = 0
+    amount_match = AMOUNT_PATTERN.search(embed_text)
+    if amount_match:
+        cash = int(amount_match.group(1))
+        bank = int(amount_match.group(2))
 
-    cash = int(cash_match.group(1)) if cash_match else 0
-    bank = int(bank_match.group(1)) if bank_match else 0
-    reason = reason_match.group(1).strip() if reason_match else ""
+    # Reason 抽出
+    reason_match = REASON_PATTERN.search(embed_text)
+    reason = reason_match.group(1) if reason_match else embed_text
 
+    # スプレッドシートに書き込み
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     bot_name = client.user.name
     action = "BUY"
 
-    # ====== Railway / ターミナル用ログ ======
-    print(f"📝 BUYログ取得:")
     print(f"📩 User: {user_name} | Cash: {cash} | Bank: {bank} | Reason: {reason}")
+    print("📝 Sheets に書き込み開始")
 
-    # ====== 書き込み ======
-    print(f"📝 Sheets に書き込み開始")
     worksheet.append_row([
         timestamp,
         bot_name,
@@ -126,6 +126,7 @@ async def on_message(message: discord.Message):
         bank,
         reason
     ], value_input_option="USER_ENTERED")
+
     print("✅ Sheets 書き込み完了")
 
 client.run(TOKEN)
