@@ -21,59 +21,44 @@ if not SERVICE_ACCOUNT_JSON:
     raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
 
 # =====================
-# Google Sheets
+# Google Sheets 認証
 # =====================
 creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1
 
+credentials = Credentials.from_service_account_info(
+    creds_dict,
+    scopes=scopes
+)
+
+gc = gspread.authorize(credentials)
+
+# 🔴 ここが重要（ID確認）
+sh = gc.open(SPREADSHEET_NAME)
+print("📄 Spreadsheet Title:", sh.title)
+print("🆔 Spreadsheet ID:", sh.id)
+print("📂 Spreadsheet URL: https://docs.google.com/spreadsheets/d/" + sh.id)
+
+worksheet = sh.sheet1
 print("✅ Google Sheets 接続成功")
 
 # =====================
 # Discord Client
 # =====================
 intents = discord.Intents.default()
-intents.message_content = True  # 念のため有効化
+intents.message_content = True
 client = discord.Client(intents=intents)
 
+# =====================
+# BUY 判定用
+# =====================
+BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
+
 processed_message_ids = set()
-
-# =====================
-# BUY ログ抽出（Embed / Content 両対応）
-# =====================
-def extract_text(message: discord.Message) -> str:
-    if message.embeds:
-        embed = message.embeds[0]
-        if embed.description:
-            return embed.description
-        if embed.fields:
-            return "\n".join(f.value for f in embed.fields)
-
-    if message.content:
-        return message.content
-
-    return ""
-
-def parse_buy(text: str):
-    user = re.search(r"\*\*User:\*\*\s*(.+)", text)
-    cash = re.search(r"Cash:\s*`?(-?\d+)`?", text)
-    bank = re.search(r"Bank:\s*`?(-?\d+)`?", text)
-    reason = re.search(r"\*\*Reason:\*\*\s*(.+)", text)
-
-    if not (user and cash and bank):
-        return None
-
-    return (
-        user.group(1).strip(),
-        cash.group(1),
-        bank.group(1),
-        reason.group(1).strip() if reason else ""
-    )
 
 @client.event
 async def on_ready():
@@ -81,7 +66,8 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    print(f"📩 message received: {message.id}")
+    if message.author.bot:
+        return
 
     if message.channel.id != BUY_LOG_CHANNEL:
         return
@@ -89,27 +75,32 @@ async def on_message(message: discord.Message):
     if message.id in processed_message_ids:
         return
 
-    if not message.author.bot:
-        return
-
-    text = extract_text(message)
-    print("🧾 抽出テキスト:", text)
-
-    result = parse_buy(text)
-    if not result:
-        print("⏭ BUY 判定できず")
-        return
-
     processed_message_ids.add(message.id)
 
-    user, cash, bank, reason = result
+    text = ""
+
+    if message.embeds:
+        embed = message.embeds[0]
+        text = (embed.description or "")
+    else:
+        text = message.content
+
+    print("🧾 抽出テキスト:", text)
+
+    if not BUY_PATTERN.search(text):
+        print("⏭ BUY 判定できず")
+        return
 
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     bot_name = message.author.name
     action = "BUY"
+    user_name = ""
+    cash = ""
+    bank = ""
+    reason = text
 
     worksheet.append_row(
-        [timestamp, bot_name, action, user, cash, bank, reason],
+        [timestamp, bot_name, action, user_name, cash, bank, reason],
         value_input_option="USER_ENTERED"
     )
 
