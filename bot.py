@@ -16,10 +16,8 @@ SPREADSHEET_NAME = "Point shop"
 WORKSHEET_NAME = "シート1"
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 
-if not TOKEN:
-    raise RuntimeError("TOKEN が設定されていません")
-if not SERVICE_ACCOUNT_JSON:
-    raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
+# UnbelievaBoat の Bot ID
+UNBELIEVABOAT_BOT_ID = 356950275044122625
 
 # =====================
 # Google Sheets 認証
@@ -50,8 +48,8 @@ client = discord.Client(intents=intents)
 # 正規表現
 # =====================
 BUY_PATTERN = re.compile(r"buy item", re.IGNORECASE)
-CASH_PATTERN = re.compile(r"Cash:\s*`([+-]?\d+)`")
-BANK_PATTERN = re.compile(r"Bank:\s*`([+-]?\d+)`")
+CASH_PATTERN = re.compile(r"Cash:\s*`([+-]?[0-9,]+)`")
+BANK_PATTERN = re.compile(r"Bank:\s*`([+-]?[0-9,]+)`")
 USER_PATTERN = re.compile(r"<@(\d+)>")
 
 processed_message_ids = set()
@@ -62,29 +60,32 @@ async def on_ready():
 
 @client.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
+    print(f"📩 message received: {message.id}")
+
+    # チャンネル制限
+    if message.channel.id != BUY_LOG_CHANNEL:
         return
 
-    if message.channel.id != BUY_LOG_CHANNEL:
+    # UnbelievaBoat 以外の Bot / User は無視
+    if message.author.id != UNBELIEVABOAT_BOT_ID:
         return
 
     if message.id in processed_message_ids:
         return
 
     if not message.embeds:
+        print("⏭ embed なし")
         return
 
     processed_message_ids.add(message.id)
 
     embed = message.embeds[0]
 
-    # fields だけを結合
     text = "\n".join(f.value for f in embed.fields)
-
     print(f"🧾 抽出テキスト:\n{text}")
 
     if not BUY_PATTERN.search(text):
-        print("⏭ BUYログではない")
+        print("⏭ BUY 判定できず")
         return
 
     cash = ""
@@ -92,9 +93,9 @@ async def on_message(message: discord.Message):
     user = ""
 
     if m := CASH_PATTERN.search(text):
-        cash = m.group(1)
+        cash = m.group(1).replace(",", "")
     if m := BANK_PATTERN.search(text):
-        bank = m.group(1)
+        bank = m.group(1).replace(",", "")
     if m := USER_PATTERN.search(text):
         user = m.group(1)
 
