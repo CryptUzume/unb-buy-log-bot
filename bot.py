@@ -1,110 +1,141 @@
-import os
-import json
-import re
-from datetime import datetime, timedelta, timezone
-
 import discord
+from discord.ext import commands
 import gspread
-from google.oauth2.service_account import Credentials
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timezone, timedelta
+import re
 
-# =====================
-# 環境変数（変更禁止）
-# =====================
-TOKEN = os.getenv("TOKEN")
-BUY_LOG_CHANNEL = int(os.getenv("BUY_LOG_CHANNEL"))
-SPREADSHEET_NAME = "Point shop"
-SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+# ========= 設定 =========
 
-if not TOKEN:
-    raise RuntimeError("TOKEN が設定されていません")
-if not SERVICE_ACCOUNT_JSON:
-    raise RuntimeError("SERVICE_ACCOUNT_JSON が設定されていません")
+DISCORD_TOKEN = "YOUR_DISCORD_BOT_TOKEN"
 
-# =====================
-# Google Sheets 認証
-# =====================
-creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+TARGET_CHANNEL_ID = 1454126930189095126  # BUYログが流れるチャンネルID
+SPREADSHEET_NAME = "BUY_LOG"
+SHEET_NAME = "Sheet1"
 
-scopes = [
-    "https://www.googleapis.com/auth/spreadsheets",
+# ========= Google Sheets =========
+
+scope = [
+    "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-gc = gspread.authorize(credentials)
-worksheet = gc.open(SPREADSHEET_NAME).sheet1  # 既存の1つ目のシートを使用
-
-# =====================
-# Discord Client
-# =====================
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-
-# =====================
-# BUY 判定用正規表現（埋め込み専用）
-# =====================
-EMBED_PATTERN = re.compile(
-    r"\*\*User:\*\* <@(\d+)>\s+"
-    r"\*\*Amount:\*\* Cash: `(-?\d+)` \| Bank: `(-?\d+)`\s+"
-    r"\*\*Reason:\*\* (.+)",
-    re.DOTALL
+credentials = ServiceAccountCredentials.from_json_keyfile_name(
+    "credentials.json", scope
 )
 
-# =====================
-# 既に処理したメッセージID保持
-# =====================
-processed_message_ids = set()
+gc = gspread.authorize(credentials)
+sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
 
-# 日本時間のタイムゾーン
+print("✅ Google Sheets 接続成功")
+
+# ========= Discord =========
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
 JST = timezone(timedelta(hours=9))
 
-@client.event
+# ========= ユーティリティ =========
+
+def extract_reason(embed: discord.Embed) -> str:
+    """
+    embed 内のどこかから Reason を拾う
+    """
+    # fields から探す
+    for field in embed.fields:
+        if "Reason" in field.name:
+            return field.value.strip()
+
+    # description から探す
+    if embed.description:
+        m = re.search(r"\*\*Reason:\*\*\s*(.+)", embed.description)
+        if m:
+            return m.group(1).strip()
+
+    return "UNKNOWN"
+
+def extract_amount(text: str) -> tuple[str, str]:
+    """
+    Cash / Bank を拾う（無ければ 0）
+    """
+    cash = "0"
+    bank = "0"
+
+    m_cash = re.search(r"Cash:\s*`?(-?\d+)`?", text)
+    m_bank = re.search(r"Bank:\s*`?(-?\d+)`?", text)
+
+    if m_cash:
+        cash = m_cash.group(1)
+    if m_bank:
+        bank = m_bank.group(1)
+
+    return cash, bank
+
+# ========= イベント =========
+
+@bot.event
 async def on_ready():
-    print(f"🤖 Logged in as {client.user}")
-    print("✅ Google Sheets 接続成功")
+    print(f"🤖 Logged in as {bot.user}")
 
-@client.event
+@bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot is False:
-        return  # 一般ユーザーは無視
 
-    if message.channel.id != BUY_LOG_CHANNEL:
+    if message.channel.id != TARGET_CHANNEL_ID:
         return
 
-    if message.id in processed_message_ids:
-        return
+    print(f"📩 message received: {message.id}")
 
-    processed_message_ids.add(message.id)
-
-    # 埋め込みだけを対象にする
+    # embed 前提
     if not message.embeds:
-        print("⏭ BUY 判定できず（埋め込みなし）")
+        print("⏭ embed なし → 無視")
         return
 
-    for embed in message.embeds:
-        embed_text = embed.description or ""
-        match = EMBED_PATTERN.search(embed_text)
-        if not match:
-            print(f"⏭ BUY 判定できず\n📩 message received: {message.id}")
-            continue
+    embed = message.embeds[0]
 
-        user_id, cash, bank, reason = match.groups()
-        timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
-        bot_name = client.user.name
-        action = "BUY"
+    raw_text = (
+        (embed.title or "") + "\n" +
+        (embed.description or "")
+    )
 
-        # Google Sheets に書き込み
-        print(f"📝 Sheets に書き込み開始\n📩 User: <@{user_id}> | Cash: {cash} | Bank: {bank} | Reason: {reason}")
-        worksheet.append_row([
-            timestamp,
-            bot_name,
-            action,
-            f"<@{user_id}>",
-            cash,
-            bank,
-            reason
-        ], value_input_option="USER_ENTERED")
-        print("✅ Sheets 書き込み完了")
+    for f in embed.fields:
+        raw_text += f"\n{f.name}: {f.value}"
 
-client.run(TOKEN)
+    # ========= BUY 判定（これだけ） =========
+    if "buy item" not in raw_text.lower():
+        print("⏭ BUY 判定できず")
+        return
+
+    print("✅ BUY 判定 OK")
+
+    # ========= 抽出 =========
+
+    user_id = "UNKNOWN"
+    m_user = re.search(r"<@(\d+)>", raw_text)
+    if m_user:
+        user_id = m_user.group(1)
+
+    cash, bank = extract_amount(raw_text)
+    reason = extract_reason(embed)
+
+    timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+
+    # ========= Sheets 書き込み =========
+
+    row = [
+        timestamp,
+        user_id,
+        cash,
+        bank,
+        reason
+    ]
+
+    sheet.append_row(row, value_input_option="USER_ENTERED")
+
+    print("📝 Sheets に書き込み完了")
+
+# ========= 起動 =========
+
+bot.run(DISCORD_TOKEN)
