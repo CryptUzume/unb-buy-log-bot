@@ -1,141 +1,128 @@
+import os
+import json
+import re
 import discord
 from discord.ext import commands
+from datetime import datetime, timezone, timedelta
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timezone, timedelta
-import re
 
-# ========= 設定 =========
 
-DISCORD_TOKEN = "YOUR_DISCORD_BOT_TOKEN"
+# =====================
+# 設定
+# =====================
 
-TARGET_CHANNEL_ID = 1454126930189095126  # BUYログが流れるチャンネルID
-SPREADSHEET_NAME = "BUY_LOG"
-SHEET_NAME = "Sheet1"
+DISCORD_TOKEN = os.environ["TOKEN"]
 
-# ========= Google Sheets =========
+SPREADSHEET_ID = "1dW5GQyn2Uc7qtgiCocrtBAgjcJyjNL4zoKexkZXVjbA"
+SHEET_NAME = "シート1"
+
+JST = timezone(timedelta(hours=9))
+
+
+# =====================
+# Google Sheets 接続
+# =====================
 
 scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
 
-credentials = ServiceAccountCredentials.from_json_keyfile_name(
-    "credentials.json", scope
+service_account_info = json.loads(
+    os.environ["SERVICE_ACCOUNT_JSON"]
+)
+
+credentials = ServiceAccountCredentials.from_json_keyfile_dict(
+    service_account_info,
+    scope
 )
 
 gc = gspread.authorize(credentials)
-sheet = gc.open(SPREADSHEET_NAME).worksheet(SHEET_NAME)
+sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
 print("✅ Google Sheets 接続成功")
 
-# ========= Discord =========
+
+# =====================
+# Discord Bot
+# =====================
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-JST = timezone(timedelta(hours=9))
-
-# ========= ユーティリティ =========
-
-def extract_reason(embed: discord.Embed) -> str:
-    """
-    embed 内のどこかから Reason を拾う
-    """
-    # fields から探す
-    for field in embed.fields:
-        if "Reason" in field.name:
-            return field.value.strip()
-
-    # description から探す
-    if embed.description:
-        m = re.search(r"\*\*Reason:\*\*\s*(.+)", embed.description)
-        if m:
-            return m.group(1).strip()
-
-    return "UNKNOWN"
-
-def extract_amount(text: str) -> tuple[str, str]:
-    """
-    Cash / Bank を拾う（無ければ 0）
-    """
-    cash = "0"
-    bank = "0"
-
-    m_cash = re.search(r"Cash:\s*`?(-?\d+)`?", text)
-    m_bank = re.search(r"Bank:\s*`?(-?\d+)`?", text)
-
-    if m_cash:
-        cash = m_cash.group(1)
-    if m_bank:
-        bank = m_bank.group(1)
-
-    return cash, bank
-
-# ========= イベント =========
 
 @bot.event
 async def on_ready():
     print(f"🤖 Logged in as {bot.user}")
 
+
 @bot.event
 async def on_message(message: discord.Message):
-
-    if message.channel.id != TARGET_CHANNEL_ID:
+    # Bot 自身は無視
+    if message.author.bot is False:
         return
 
     print(f"📩 message received: {message.id}")
 
-    # embed 前提
+    # ===== 埋め込みのみ対象 =====
     if not message.embeds:
-        print("⏭ embed なし → 無視")
         return
 
-    embed = message.embeds[0]
+    for embed in message.embeds:
+        # タイトルなしは想定内
+        description = embed.description
+        if not description:
+            continue
 
-    raw_text = (
-        (embed.title or "") + "\n" +
-        (embed.description or "")
-    )
+        # buy item を含まないものは除外
+        if "buy item" not in description.lower():
+            print("⏭ BUY 判定できず")
+            continue
 
-    for f in embed.fields:
-        raw_text += f"\n{f.name}: {f.value}"
+        # ===== 正規表現で抽出 =====
+        user_match = re.search(r"\*\*User:\*\*\s*<@(\d+)>", description)
+        cash_match = re.search(r"Cash:\s*`(-?\d+)`", description)
+        bank_match = re.search(r"Bank:\s*`(-?\d+)`", description)
+        reason_match = re.search(r"\*\*Reason:\*\*\s*(.+)", description)
 
-    # ========= BUY 判定（これだけ） =========
-    if "buy item" not in raw_text.lower():
-        print("⏭ BUY 判定できず")
-        return
+        if not (user_match and cash_match and bank_match and reason_match):
+            print("⏭ 必須項目不足")
+            continue
 
-    print("✅ BUY 判定 OK")
+        user_id = user_match.group(1)
+        cash = cash_match.group(1)
+        bank = bank_match.group(1)
+        reason = reason_match.group(1).strip()
 
-    # ========= 抽出 =========
+        # JST タイムスタンプ
+        timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
 
-    user_id = "UNKNOWN"
-    m_user = re.search(r"<@(\d+)>", raw_text)
-    if m_user:
-        user_id = m_user.group(1)
+        row = [
+            timestamp,
+            message.author.name,
+            "BUY",
+            user_id,
+            cash,
+            bank,
+            reason
+        ]
 
-    cash, bank = extract_amount(raw_text)
-    reason = extract_reason(embed)
+        print(
+            f"📝 Sheets に書き込み開始 | "
+            f"User: {user_id} | Cash: {cash} | Bank: {bank} | Reason: {reason}"
+        )
 
-    timestamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+        sheet.append_row(row, value_input_option="USER_ENTERED")
 
-    # ========= Sheets 書き込み =========
+        print("✅ Sheets 書き込み完了")
 
-    row = [
-        timestamp,
-        user_id,
-        cash,
-        bank,
-        reason
-    ]
 
-    sheet.append_row(row, value_input_option="USER_ENTERED")
-
-    print("📝 Sheets に書き込み完了")
-
-# ========= 起動 =========
+# =====================
+# 起動
+# =====================
 
 bot.run(DISCORD_TOKEN)
